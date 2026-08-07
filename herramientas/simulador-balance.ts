@@ -1,0 +1,226 @@
+// Simulador headless de combate para validar balance.ts sin necesidad de
+// abrir el navegador. Usa las mismas fórmulas de daño/triángulo de contras
+// que el motor real (ver src/sistemas/Combate.ts). Pensado como herramienta
+// de desarrollo para volver a chequear el balance si se tocan los números:
+//
+//   npx tsx herramientas/simulador-balance.ts
+//
+// Es una aproximación (nube de unidades que se acerca en línea recta,
+// disparos a objetivos aleatorios dentro de rango), no una réplica exacta
+// del motor con posiciones 2D reales — alcanza para verificar que el
+// triángulo de contras y el desbalance del crucero apuntan en la dirección
+// correcta y con qué margen.
+import { UNIDADES, TRIANGULO_CONTRAS } from '../src/datos/balance.ts';
+import type { TipoUnidad, Faccion } from '../src/nucleo/tipos.ts';
+
+type Bando = 'A' | 'B';
+
+interface UnidadSim {
+  bando: Bando;
+  tipo: TipoUnidad;
+  vida: number;
+  vidaMax: number;
+  danio: number;
+  alcance: number;
+  velocidad: number;
+  cadenciaMs: number;
+  cronometro: number;
+  radioDanioArea?: number;
+}
+
+function crearGrupo(bando: Bando, faccion: Faccion, tipo: TipoUnidad, cantidad: number): UnidadSim[] {
+  const d = UNIDADES[faccion][tipo];
+  const arr: UnidadSim[] = [];
+  for (let i = 0; i < cantidad; i++) {
+    arr.push({
+      bando,
+      tipo,
+      vida: d.vidaMax,
+      vidaMax: d.vidaMax,
+      danio: d.danio,
+      alcance: d.alcance,
+      velocidad: d.velocidad,
+      cadenciaMs: d.cadenciaFuegoMs,
+      cronometro: Math.random() * d.cadenciaFuegoMs,
+      radioDanioArea: d.radioDanioArea,
+    });
+  }
+  return arr;
+}
+
+function multiplicador(atacante: TipoUnidad, defensor: TipoUnidad): number {
+  return TRIANGULO_CONTRAS[atacante]?.[defensor] ?? 1;
+}
+
+function simularBatalla(
+  grupoA: UnidadSim[],
+  grupoB: UnidadSim[],
+  distanciaInicial: number,
+  velocidadCierreExtra = 0,
+  maxMs = 120000,
+): { ganador: Bando | 'empate'; msDuracion: number; sobrevivientesA: number; sobrevivientesB: number } {
+  let distancia = distanciaInicial;
+  const dtMs = 100;
+  let t = 0;
+
+  const vivos = (g: UnidadSim[]) => g.filter((u) => u.vida > 0);
+
+  while (t < maxMs) {
+    const vivosA = vivos(grupoA);
+    const vivosB = vivos(grupoB);
+    if (vivosA.length === 0 || vivosB.length === 0) break;
+
+    // El grupo sigue cerrando distancia mientras no esté ya pegado, sin importar
+    // si alguna unidad individual ya está en rango: en el juego real las naves
+    // que todavía no llegaron a su alcance siguen acercándose aunque otras del
+    // mismo grupo ya estén disparando. Frenar el cierre apenas la unidad de
+    // mayor alcance queda "en rango" dejaba a las unidades de alcance corto
+    // varadas para siempre fuera de rango — bug del simulador, no del balance.
+    const velA = Math.max(...vivosA.map((u) => u.velocidad));
+    const velB = Math.max(...vivosB.map((u) => u.velocidad));
+    if (distancia > 0) {
+      distancia -= ((velA + velB) / 2 + velocidadCierreExtra) * (dtMs / 1000);
+      distancia = Math.max(0, distancia);
+    }
+
+    for (const u of vivosA) {
+      u.cronometro -= dtMs;
+      if (distancia <= u.alcance && u.cronometro <= 0) {
+        u.cronometro = u.cadenciaMs;
+        disparar(u, vivos(grupoB));
+      }
+    }
+    for (const u of vivosB) {
+      u.cronometro -= dtMs;
+      if (distancia <= u.alcance && u.cronometro <= 0) {
+        u.cronometro = u.cadenciaMs;
+        disparar(u, vivos(grupoA));
+      }
+    }
+
+    t += dtMs;
+  }
+
+  const vivosA = vivos(grupoA).length;
+  const vivosB = vivos(grupoB).length;
+  let ganador: Bando | 'empate' = 'empate';
+  if (vivosA > 0 && vivosB === 0) ganador = 'A';
+  else if (vivosB > 0 && vivosA === 0) ganador = 'B';
+  return { ganador, msDuracion: t, sobrevivientesA: vivosA, sobrevivientesB: vivosB };
+}
+
+function disparar(atacante: UnidadSim, objetivosVivos: UnidadSim[]): void {
+  if (objetivosVivos.length === 0) return;
+  const objetivo = objetivosVivos[Math.floor(Math.random() * objetivosVivos.length)];
+  const dmg = atacante.danio * multiplicador(atacante.tipo, objetivo.tipo);
+  objetivo.vida -= dmg;
+  if (atacante.radioDanioArea) {
+    for (let i = 0; i < 2; i++) {
+      const otro = objetivosVivos[Math.floor(Math.random() * objetivosVivos.length)];
+      if (otro !== objetivo) otro.vida -= dmg;
+    }
+  }
+}
+
+function costoGrupo(faccion: Faccion, tipo: TipoUnidad, cantidad: number): number {
+  return UNIDADES[faccion][tipo].costo * cantidad;
+}
+
+function correrN(
+  nombre: string,
+  fabricaA: () => UnidadSim[],
+  fabricaB: () => UnidadSim[],
+  distancia: number,
+  n = 200,
+  velocidadCierreExtra = 0,
+) {
+  let winsA = 0;
+  let winsB = 0;
+  let empates = 0;
+  for (let i = 0; i < n; i++) {
+    const r = simularBatalla(fabricaA(), fabricaB(), distancia, velocidadCierreExtra);
+    if (r.ganador === 'A') winsA++;
+    else if (r.ganador === 'B') winsB++;
+    else empates++;
+  }
+  console.log(
+    `${nombre}: A gana ${((winsA / n) * 100).toFixed(0)}%  |  B gana ${((winsB / n) * 100).toFixed(0)}%  |  empates ${empates}`,
+  );
+}
+
+console.log('=== TRIÁNGULO DE CONTRAS (costo aproximadamente igual, ambos bandos Coalición) ===\n');
+
+correrN(
+  'A=cazaLigero(x8, 400cr) vs B=bombardero(x4, 400cr)',
+  () => crearGrupo('A', 'coalicion', 'cazaLigero', 8),
+  () => crearGrupo('B', 'coalicion', 'bombardero', 4),
+  300,
+);
+
+correrN(
+  'A=cazaPesado(x5, 475cr) vs B=cazaLigero(x9, 450cr)',
+  () => crearGrupo('A', 'coalicion', 'cazaPesado', 5),
+  () => crearGrupo('B', 'coalicion', 'cazaLigero', 9),
+  300,
+);
+
+correrN(
+  'A=fragata(x1, 320cr) vs B=cazaLigero(x6, 300cr)',
+  () => crearGrupo('A', 'coalicion', 'fragata', 1),
+  () => crearGrupo('B', 'coalicion', 'cazaLigero', 6),
+  300,
+);
+
+correrN(
+  'A=fragata(x1, 320cr) vs B=cazaPesado(x3, 285cr)',
+  () => crearGrupo('A', 'coalicion', 'fragata', 1),
+  () => crearGrupo('B', 'coalicion', 'cazaPesado', 3),
+  300,
+);
+
+correrN(
+  'A=bombardero(x3, 300cr) vs B=fragata(x1, 320cr) [bombardero ≻ fragata]',
+  () => crearGrupo('A', 'coalicion', 'bombardero', 3),
+  () => crearGrupo('B', 'coalicion', 'fragata', 1),
+  300,
+);
+
+console.log('\n=== CUSTODIO (crucero Coalición) vs FUERZAS EQUIVALENTES EN COSTO (Enjambre) ===\n');
+const costoCrucero = UNIDADES.coalicion.crucero.costo;
+console.log(`Costo del Custodio: ${costoCrucero}cr\n`);
+
+for (const nCazas of [10, 16, 22, 28, 34, 40]) {
+  correrN(
+    `A=Custodio(x1) vs B=Rapaz(x${nCazas}, ${costoGrupo('enjambre', 'cazaLigero', nCazas)}cr)`,
+    () => crearGrupo('A', 'coalicion', 'crucero', 1),
+    () => crearGrupo('B', 'enjambre', 'cazaLigero', nCazas),
+    350,
+    100,
+    60,
+  );
+}
+
+console.log('\n=== CUSTODIO vs DEVORADOR (crucero Enjambre), 1v1 ===\n');
+correrN(
+  'A=Custodio(x1) vs B=Devorador(x1)',
+  () => crearGrupo('A', 'coalicion', 'crucero', 1),
+  () => crearGrupo('B', 'enjambre', 'crucero', 1),
+  350,
+  200,
+);
+
+console.log('\n=== Ratios crudos del desbalance intencional del crucero ===\n');
+const cCoal = UNIDADES.coalicion.crucero;
+const cEnj = UNIDADES.enjambre.crucero;
+console.log(
+  `Custodio: vida=${cCoal.vidaMax} danio=${cCoal.danio} costo=${cCoal.costo} tProd=${cCoal.tiempoProduccionMs / 1000}s AoE=${cCoal.radioDanioArea}`,
+);
+console.log(
+  `Devorador: vida=${cEnj.vidaMax} danio=${cEnj.danio} costo=${cEnj.costo} tProd=${cEnj.tiempoProduccionMs / 1000}s AoE=${cEnj.radioDanioArea}`,
+);
+console.log(
+  `Ratio vida: ${(cCoal.vidaMax / cEnj.vidaMax).toFixed(2)}x   Ratio daño: ${(cCoal.danio / cEnj.danio).toFixed(2)}x`,
+);
+console.log(
+  `Ratio costo: ${(cCoal.costo / cEnj.costo).toFixed(2)}x   Ratio tiempo prod: ${(cCoal.tiempoProduccionMs / cEnj.tiempoProduccionMs).toFixed(2)}x`,
+);
