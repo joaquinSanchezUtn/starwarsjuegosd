@@ -14,6 +14,8 @@ import * as coalicionBombardero from './coalicion/bombardero.ts';
 import * as coalicionFragata from './coalicion/fragata.ts';
 import * as coalicionCrucero from './coalicion/crucero.ts';
 import * as coalicionCaptura from './coalicion/captura.ts';
+import * as coalicionInterceptor from './coalicion/interceptor.ts';
+import * as coalicionDestructor from './coalicion/destructor.ts';
 import * as coalicionBase from './coalicion/base.ts';
 
 import * as enjambreCazaLigero from './enjambre/cazaLigero.ts';
@@ -22,6 +24,8 @@ import * as enjambreBombardero from './enjambre/bombardero.ts';
 import * as enjambreFragata from './enjambre/fragata.ts';
 import * as enjambreCrucero from './enjambre/crucero.ts';
 import * as enjambreCaptura from './enjambre/captura.ts';
+import * as enjambreInterceptor from './enjambre/interceptor.ts';
+import * as enjambreDestructor from './enjambre/destructor.ts';
 import * as enjambreBase from './enjambre/base.ts';
 
 type FnDibujo = (contenedor: Phaser.GameObjects.Container, escena: Phaser.Scene) => void;
@@ -34,6 +38,8 @@ const DISPATCH_NAVE: Record<Faccion, Record<TipoUnidad, FnDibujo>> = {
     fragata: coalicionFragata.dibujar,
     crucero: coalicionCrucero.dibujar,
     captura: coalicionCaptura.dibujar,
+    interceptor: coalicionInterceptor.dibujar,
+    destructor: coalicionDestructor.dibujar,
   },
   enjambre: {
     cazaLigero: enjambreCazaLigero.dibujar,
@@ -42,6 +48,8 @@ const DISPATCH_NAVE: Record<Faccion, Record<TipoUnidad, FnDibujo>> = {
     fragata: enjambreFragata.dibujar,
     crucero: enjambreCrucero.dibujar,
     captura: enjambreCaptura.dibujar,
+    interceptor: enjambreInterceptor.dibujar,
+    destructor: enjambreDestructor.dibujar,
   },
 };
 

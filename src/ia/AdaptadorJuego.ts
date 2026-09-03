@@ -1,8 +1,8 @@
 // Adaptador que traduce el estado real del motor (EscenaJuego) al contrato
 // ApiJuegoParaIA que consume la máquina de estados de la IA. Mantiene a la
 // IA totalmente desacoplada de Phaser y de las clases concretas de entidades.
-import type { ApiJuegoParaIA, InfoBaseIA, InfoMinaIA, InfoUnidadIA } from './interfazJuego.ts';
-import type { Faccion, TipoUnidad } from '../nucleo/tipos.ts';
+import type { ApiJuegoParaIA, InfoBaseIA, InfoHabilidadCruceroIA, InfoMinaIA, InfoUnidadIA } from './interfazJuego.ts';
+import type { Faccion, NivelesTecnologia, TipoUnidad } from '../nucleo/tipos.ts';
 import type { EscenaJuego } from '../escenas/EscenaJuego.ts';
 import { ANCHO_MUNDO, ALTO_MUNDO } from '../datos/mapa.ts';
 
@@ -59,6 +59,9 @@ export class AdaptadorJuego implements ApiJuegoParaIA {
       vida: m.vida,
       vidaMax: m.vidaMax,
       destruida: m.destruida,
+      esRica: m.esRica,
+      nivelMejora: m.nivelMejora,
+      costoMejora: m.nivelMejora === 0 && !m.destruida ? m.costoMejora() : 0,
     }));
   }
 
@@ -91,5 +94,32 @@ export class AdaptadorJuego implements ApiJuegoParaIA {
 
   obtenerLimitesMundo(): { ancho: number; alto: number } {
     return { ancho: ANCHO_MUNDO, alto: ALTO_MUNDO };
+  }
+
+  mejorarMina(faccion: Faccion, idMina: number): boolean {
+    return this.escena.mejorarMinaPara(faccion, idMina);
+  }
+
+  obtenerNivelesTecnologia(faccion: Faccion): NivelesTecnologia {
+    return this.escena.obtenerNivelesTecnologiaPara(faccion);
+  }
+
+  costoProximoNivelTecnologia(faccion: Faccion, rama: 'armamento' | 'defensa'): number {
+    return this.escena.costoProximoNivelTecnologiaPara(faccion, rama);
+  }
+
+  comprarTecnologia(faccion: Faccion, rama: 'armamento' | 'defensa'): boolean {
+    return this.escena.comprarTecnologiaPara(faccion, rama);
+  }
+
+  obtenerHabilidadesCrucero(faccion: Faccion): InfoHabilidadCruceroIA[] {
+    return this.escena
+      .obtenerNaves(faccion)
+      .filter((n) => n.tipo === 'crucero' && n.estaVivo())
+      .map((n) => ({ idNave: n.id, lista: n.puedeUsarHabilidad(), progreso01: n.progresoHabilidad01() }));
+  }
+
+  activarHabilidadCrucero(faccion: Faccion, idNave: number): boolean {
+    return this.escena.activarHabilidadCrucero(faccion, idNave);
   }
 }

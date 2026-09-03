@@ -20,7 +20,7 @@ import type {
   InfoMinaIA,
   InfoUnidadIA,
 } from './interfazJuego.ts';
-import { BASE, UNIDADES } from '../datos/balance.ts';
+import { BASE, UNIDADES, unidadDisponible } from '../datos/balance.ts';
 
 /** Fase dominante de agresividad de la IA en el ciclo de decisión actual. */
 type FaseIA = 'expansion' | 'presion' | 'ataque';
@@ -91,6 +91,21 @@ export class MaquinaEstadosIA {
   /** Tiempo máximo que una unidad queda "reservada" para una misión ofensiva antes de liberarse sola. */
   private readonly TIEMPO_MAX_COMPROMISO_MS = 25000;
   /**
+   * Factor que multiplica la distancia al elegir mina propia/rival (más chico
+   * = más prioridad): una mina rica rinde el doble, así que vale la pena
+   * priorizarla aunque esté un poco más lejos que una normal.
+   */
+  private readonly FACTOR_PRIORIDAD_MINA_RICA = 0.6;
+  /**
+   * Margen de reserva (como fracción del costo) para gastos "oportunistas"
+   * que no son la inversión principal del ciclo (mejora de mina, tecnología):
+   * más chico que MARGEN_RESERVA_SUBIDA porque no comprometen tanto como
+   * subir de nivel de base.
+   */
+  private readonly MARGEN_RESERVA_GASTO_OPORTUNISTA = 0.2;
+  /** Radio (desde el crucero propio) para considerar que está "en combate activo". */
+  private readonly RADIO_HABILIDAD_CRUCERO = 240;
+  /**
    * `InfoBaseIA` no expone un `id` propio (hay una única base por bando).
    * Para `ordenarAtacar(..., tipoObjetivo: 'base')` se asume que el motor
    * resuelve el objetivo por bando rival + tipoObjetivo === 'base', y que
@@ -155,8 +170,14 @@ export class MaquinaEstadosIA {
     this.actualizarFase(analisis);
     this.decidirProduccion(analisis);
     this.decidirSubidaNivel(analisis);
+    // Gastos "oportunistas" de economía: después de la inversión principal
+    // (subida de nivel) pero antes de mover tropas, así compiten por los
+    // mismos créditos con la prioridad correcta.
+    this.decidirMejoraMinas(analisis);
+    this.decidirTecnologia(analisis);
     this.decidirDefensa(analisis);
     this.decidirOfensiva(analisis);
+    this.decidirHabilidad(analisis);
     this.decidirCaptura(analisis);
   }
 
@@ -270,7 +291,10 @@ export class MaquinaEstadosIA {
   private elegirProximaUnidadAProducir(a: AnalisisEstado): TipoUnidad | null {
     const nivel = a.basePropia.nivel;
     const datos = UNIDADES[this.faccionPropia];
-    const disponible = (tipo: TipoUnidad): boolean => datos[tipo].nivelBaseRequerido <= nivel;
+    // Siempre por `unidadDisponible`, no comparando nivelBaseRequerido a mano:
+    // filtra naves exclusivas del otro bando (acá no aplica para el Enjambre,
+    // pero evita reintroducir el bug si algún día se comparte este código).
+    const disponible = (tipo: TipoUnidad): boolean => unidadDisponible(this.faccionPropia, tipo, nivel);
     const cantidad = (tipo: TipoUnidad): number =>
       a.unidadesPropias.filter((u) => u.tipo === tipo).length;
     const minasCapturables = a.minas.filter(
@@ -303,6 +327,17 @@ export class MaquinaEstadosIA {
         ) {
           return 'crucero';
         }
+        // Guadaña: semi-capital propia del Enjambre, más barata y rápida de
+        // sacar que el Devorador (aunque "se rompe fácil"). Buena segunda
+        // opción de nivel 3 cuando ya hay crucero o no conviene todavía
+        // (ej. en "apurar"), para no depender de un solo capital.
+        if (
+          disponible('destructor') &&
+          cantidad('destructor') < 2 &&
+          a.creditos >= datos.destructor.costo * 1.15
+        ) {
+          return 'destructor';
+        }
         if (disponible('bombardero') && cantidad('bombardero') < 2) return 'bombardero';
         if (disponible('fragata') && cantidad('fragata') < 2) return 'fragata';
         if (disponible('cazaPesado') && cantidad('cazaPesado') * 2 < cantidad('cazaLigero')) {
@@ -333,11 +368,57 @@ export class MaquinaEstadosIA {
   }
 
   // -------------------------------------------------------------------------
+  // Mejora de minas: economía "de una vez" que se pierde si la mina cae.
+  // -------------------------------------------------------------------------
+
+  private decidirMejoraMinas(a: AnalisisEstado): void {
+    const elegibles = a.minasPropias.filter((m) => m.nivelMejora === 0 && m.costoMejora > 0);
+    if (elegibles.length === 0) return;
+
+    // La mejora se pierde si destruyen la mina, así que se prioriza una mina
+    // sin rivales cerca (no en el frente) y, entre las seguras, la más cercana
+    // a la base propia (retaguardia) y/o rica (el bono de mejora rinde más).
+    const seguras = elegibles
+      .filter((m) => !a.unidadesRivales.some((u) => this.distancia(u, m) <= this.RADIO_ALERTA_MINA))
+      .sort((x, y) => {
+        if (x.esRica !== y.esRica) return x.esRica ? -1 : 1;
+        return this.distancia(x, a.basePropia) - this.distancia(y, a.basePropia);
+      });
+    const objetivo = seguras[0];
+    if (!objetivo) return; // todas las mejorables están amenazadas o en disputa: esperar
+
+    const margenReserva = objetivo.costoMejora * this.MARGEN_RESERVA_GASTO_OPORTUNISTA;
+    if (a.creditos >= objetivo.costoMejora + margenReserva) {
+      this.api.mejorarMina(this.faccionPropia, objetivo.id);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Tecnología: compra oportunista de ambas ramas cuando hay margen.
+  // -------------------------------------------------------------------------
+
+  private decidirTecnologia(a: AnalisisEstado): void {
+    for (const rama of ['armamento', 'defensa'] as const) {
+      const costo = this.api.costoProximoNivelTecnologia(this.faccionPropia, rama);
+      if (costo <= 0) continue; // ya está al máximo
+      const margenReserva = costo * this.MARGEN_RESERVA_GASTO_OPORTUNISTA;
+      if (a.creditos >= costo + margenReserva) {
+        this.api.comprarTecnologia(this.faccionPropia, rama);
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Defensa reactiva de base y minas propias
   // -------------------------------------------------------------------------
 
   private decidirDefensa(a: AnalisisEstado): void {
     this.idsEnDefensa.clear();
+    // Nota: esto no distingue tipos de amenaza (incluye al Estilete, el as
+    // exclusivo de la Coalición) a propósito. `a.unidadesRivales` viene sin
+    // filtrar de `obtenerUnidades`, así que cualquier nave rival —Estilete
+    // incluido— ya cuenta como amenaza por su sola presencia/distancia; no
+    // hace falta un caso especial para "reconocerlo".
     if (a.unidadesRivales.length === 0) return;
 
     const amenazasBase = a.unidadesRivales.filter(
@@ -461,7 +542,14 @@ export class MaquinaEstadosIA {
       if (lejos.length > 0) candidatas = lejos;
     }
 
-    return this.masCercana(candidatas, a.basePropia);
+    // Una mina rica le duele más al rival que una normal a la misma distancia:
+    // se prioriza aunque esté un poco más lejos (FACTOR_PRIORIDAD_MINA_RICA).
+    const ordenadas = [...candidatas].sort((x, y) => {
+      const scoreX = this.distancia(x, a.basePropia) * (x.esRica ? this.FACTOR_PRIORIDAD_MINA_RICA : 1);
+      const scoreY = this.distancia(y, a.basePropia) * (y.esRica ? this.FACTOR_PRIORIDAD_MINA_RICA : 1);
+      return scoreX - scoreY;
+    });
+    return ordenadas[0] ?? null;
   }
 
   private elegirMinaRivalLejosDe(
@@ -474,6 +562,32 @@ export class MaquinaEstadosIA {
   }
 
   // -------------------------------------------------------------------------
+  // Habilidad del crucero: "enjambre de emergencia" (Devorador)
+  // -------------------------------------------------------------------------
+
+  private decidirHabilidad(a: AnalisisEstado): void {
+    const habilidades = this.api.obtenerHabilidadesCrucero(this.faccionPropia);
+    if (habilidades.length === 0) return;
+
+    const cruceros = a.unidadesPropias.filter((u) => u.tipo === 'crucero');
+    for (const habilidad of habilidades) {
+      if (!habilidad.lista) continue;
+      const nave = cruceros.find((u) => u.id === habilidad.idNave);
+      if (!nave) continue;
+
+      // Los drones que libera son gratis pero de vida útil corta: si no hay
+      // nadie cerca para pelear se pierden sin aportar nada. No hace falta
+      // "guardarla" para un momento perfecto, alcanza con que haya combate.
+      const enCombate = a.unidadesRivales.some(
+        (u) => this.distancia(u, nave) <= this.RADIO_HABILIDAD_CRUCERO,
+      );
+      if (enCombate) {
+        this.api.activarHabilidadCrucero(this.faccionPropia, habilidad.idNave);
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // Expansión: captura de minas neutrales y en disputa
   // -------------------------------------------------------------------------
 
@@ -483,8 +597,11 @@ export class MaquinaEstadosIA {
       .filter((m) => !m.destruida && m.duenio !== this.faccionPropia)
       .map((m) => ({
         mina: m,
-        // Prioriza minas cercanas a nuestra base y minas cercanas al centro del mapa.
-        score: this.distancia(m, a.basePropia) * 0.6 + this.distancia(m, centro) * 0.4,
+        // Prioriza minas cercanas a nuestra base, cercanas al centro del mapa,
+        // y las ricas (rinden el doble) aunque estén algo más lejos.
+        score:
+          (this.distancia(m, a.basePropia) * 0.6 + this.distancia(m, centro) * 0.4) *
+          (m.esRica ? this.FACTOR_PRIORIDAD_MINA_RICA : 1),
       }))
       .sort((x, y) => x.score - y.score)
       .map((x) => x.mina);

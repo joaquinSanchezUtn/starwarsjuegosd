@@ -25,6 +25,7 @@ export class GestorSeleccion {
   private escena: Phaser.Scene;
   private ctx: ContextoSeleccion;
   seleccionActual: Nave[] = [];
+  minaSeleccionada: Mina | null = null;
   private grupos: Map<number, Nave[]> = new Map();
 
   private arrastrando = false;
@@ -35,6 +36,7 @@ export class GestorSeleccion {
   private teclaCtrl: Phaser.Input.Keyboard.Key;
 
   onCambioSeleccion?: (naves: Nave[]) => void;
+  onSeleccionMina?: (mina: Mina | null) => void;
 
   constructor(escena: Phaser.Scene, ctx: ContextoSeleccion) {
     this.escena = escena;
@@ -77,8 +79,14 @@ export class GestorSeleccion {
     const x = Math.min(this.inicioScreenX, pointer.x);
     const y = Math.min(this.inicioScreenY, pointer.y);
     const w = Math.abs(pointer.x - this.inicioScreenX);
-    const h = Math.abs(pointer.y - this.inicioScreenY);
-    if (w > UMBRAL_ARRASTRE_PX || h > UMBRAL_ARRASTRE_PX) {
+    const hCrudo = Math.abs(pointer.y - this.inicioScreenY);
+    // Recorta el rectángulo VISUAL contra el borde superior de la franja del
+    // HUD: la selección en coordenadas de mundo (alPointerUp) ya era correcta
+    // sin esto, pero el rectángulo dibujado se metía dentro del HUD si el
+    // arrastre terminaba ahí. Puramente cosmético.
+    const limiteInferior = this.escena.scale.height - this.ctx.alturaZonaHudPx;
+    const h = Math.min(hCrudo, Math.max(0, limiteInferior - y));
+    if (w > UMBRAL_ARRASTRE_PX || hCrudo > UMBRAL_ARRASTRE_PX) {
       this.grafico.lineStyle(1.5, PALETA[this.ctx.faccionJugador].seleccion, 0.9);
       this.grafico.fillStyle(PALETA[this.ctx.faccionJugador].seleccion, 0.12);
       this.grafico.fillRect(x, y, w, h);
@@ -100,7 +108,14 @@ export class GestorSeleccion {
     if (esClick) {
       const mundo = cam.getWorldPoint(pointer.x, pointer.y);
       const nave = this.buscarNaveCercana(mundo.x, mundo.y);
-      this.setSeleccion(nave ? [nave] : []);
+      if (nave) {
+        this.setMinaSeleccionada(null);
+        this.setSeleccion([nave]);
+        return;
+      }
+      const mina = this.buscarMinaPropiaCercana(mundo.x, mundo.y);
+      this.setSeleccion([]);
+      this.setMinaSeleccionada(mina);
       return;
     }
 
@@ -113,7 +128,21 @@ export class GestorSeleccion {
     const seleccion = this.ctx
       .obtenerNavesJugador()
       .filter((n) => n.estaVivo() && n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY);
+    this.setMinaSeleccionada(null);
     this.setSeleccion(seleccion);
+  }
+
+  private buscarMinaPropiaCercana(x: number, y: number): Mina | null {
+    for (const m of this.ctx.obtenerMinas()) {
+      if (m.destruida || m.duenio !== this.ctx.faccionJugador) continue;
+      if (Phaser.Math.Distance.Between(x, y, m.x, m.y) <= 26) return m;
+    }
+    return null;
+  }
+
+  setMinaSeleccionada(mina: Mina | null): void {
+    this.minaSeleccionada = mina;
+    this.onSeleccionMina?.(mina);
   }
 
   private buscarNaveCercana(x: number, y: number): Nave | null {
@@ -187,6 +216,9 @@ export class GestorSeleccion {
     this.seleccionActual = this.seleccionActual.filter((n) => n.estaVivo());
     for (const [k, naves] of this.grupos) {
       this.grupos.set(k, naves.filter((n) => n.estaVivo()));
+    }
+    if (this.minaSeleccionada && (this.minaSeleccionada.destruida || this.minaSeleccionada.duenio !== this.ctx.faccionJugador)) {
+      this.setMinaSeleccionada(null);
     }
   }
 }

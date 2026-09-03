@@ -2,7 +2,7 @@
 // créditos, tiene mucha vida y un ataque defensivo de corto alcance.
 import Phaser from 'phaser';
 import type { Faccion, ItemColaProduccion, NivelBase, ObjetivoAtacable, TipoUnidad } from '../nucleo/tipos.ts';
-import { BASE, UNIDADES } from '../datos/balance.ts';
+import { BASE, UNIDADES, unidadDisponible } from '../datos/balance.ts';
 import { RADIO_BASE_JUGADOR_PX } from '../datos/escalas.ts';
 import { dibujarBase } from '../render/dibujos/index.ts';
 import { PALETA, COLOR_HP_ALTO, COLOR_HP_MEDIO, COLOR_HP_BAJO } from '../datos/colores.ts';
@@ -56,15 +56,20 @@ export class Base extends Phaser.GameObjects.Container implements ObjetivoAtacab
     this.actualizarBarraVida();
   }
 
-  /** Intenta encolar una unidad. Devuelve false si no hay créditos/nivel/espacio. */
+  /** Intenta encolar una unidad. Devuelve false si no hay créditos/nivel/espacio, o si es exclusiva del otro bando. */
   puedeProducir(tipo: TipoUnidad): boolean {
-    const datos = UNIDADES[this.faccion][tipo];
-    return datos.nivelBaseRequerido <= this.nivel && this.colaProduccion.length < 6;
+    return unidadDisponible(this.faccion, tipo, this.nivel) && this.colaProduccion.length < 6;
   }
 
   encolar(tipo: TipoUnidad): void {
     const datos = UNIDADES[this.faccion][tipo];
-    this.colaProduccion.push({ tipo, tiempoTotalMs: datos.tiempoProduccionMs, tiempoRestanteMs: datos.tiempoProduccionMs });
+    this.colaProduccion.push({
+      tipo,
+      tiempoTotalMs: datos.tiempoProduccionMs,
+      tiempoRestanteMs: datos.tiempoProduccionMs,
+      // El Rapaz (Enjambre) sale en tandas de 3 por orden; el resto de las naves, de 1.
+      cantidad: datos.cantidadPorOrden ?? 1,
+    });
   }
 
   iniciarSubidaNivel(): boolean {
@@ -75,14 +80,19 @@ export class Base extends Phaser.GameObjects.Container implements ObjetivoAtacab
     return true;
   }
 
-  /** Avanza cola de producción y subida de nivel. Devuelve tipos listos para spawnear este tick. */
-  actualizarProduccion(dtMs: number): TipoUnidad[] {
-    const listos: TipoUnidad[] = [];
+  /**
+   * Avanza cola de producción y subida de nivel. Devuelve las órdenes listas
+   * para spawnear este tick, con la cantidad de naves que entrega cada una.
+   * `multiplicadorVelocidad` es el bono tecnológico de velocidad de
+   * producción del Enjambre (1 = sin bono, >1 = más rápido).
+   */
+  actualizarProduccion(dtMs: number, multiplicadorVelocidad = 1): { tipo: TipoUnidad; cantidad: number }[] {
+    const listos: { tipo: TipoUnidad; cantidad: number }[] = [];
     if (this.colaProduccion.length > 0) {
       const primero = this.colaProduccion[0];
-      primero.tiempoRestanteMs -= dtMs;
+      primero.tiempoRestanteMs -= dtMs * multiplicadorVelocidad;
       if (primero.tiempoRestanteMs <= 0) {
-        listos.push(primero.tipo);
+        listos.push({ tipo: primero.tipo, cantidad: primero.cantidad });
         this.colaProduccion.shift();
       }
     }

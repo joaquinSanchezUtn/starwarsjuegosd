@@ -2,6 +2,8 @@
 
 Este documento registra las decisiones tomadas de forma autónoma durante el desarrollo de **Guerra de Fábricas**, con la justificación de cada una. El proyecto se construyó de punta a punta con un orquestador que delegó en subagentes en paralelo (arte de naves, IA enemiga) y resolvió el resto (arquitectura, sistemas de juego, UI, balance, integración y testing) de forma directa.
 
+> Las secciones de abajo hasta "Prompt 2" documentan la primera entrega (mapa, minas, base con niveles, roster de 11 naves simétricas, IA, 3 dificultades). La sección **"Prompt 2 — el juego se vuelve vivo"** al final del documento registra la segunda vuelta: gráficos semi-3D, bandos asimétricos, habilidades, sonido y economía ampliada, construida iterando sobre esta base sin rehacerla.
+
 ## Ambientación y nombres
 
 - Universo original inspirado en la estética de "guerra de clones vs. droides", sin usar nombres registrados de ninguna franquicia. El juego se llama **Guerra de Fábricas** para reforzar la fantasía central: no hay héroes, hay líneas de producción compitiendo.
@@ -90,3 +92,99 @@ El entorno de esta sesión no tenía la extensión de Chrome conectada, y la des
 5. Revisión adversarial manual del código: se rastrearon a mano los casos de clicks repetidos sobre botones deshabilitados, ciclos de captura/destrucción de minas, quedarse sin créditos, selección de unidades muertas, órdenes sobre objetivos inválidos, reinicio de partida (limpieza de la escena), y saltos grandes de `delta` tras pestaña en segundo plano (se clampea a 100ms por tick para evitar picos de daño/economía).
 
 Esto da confianza razonable en la corrección del código, pero **no reemplaza una sesión de juego real**. Se recomienda como primer paso de cualquier sesión futura correr `npm run dev` y jugar al menos una partida completa en cada dificultad (ver `TAREAS.md`).
+
+---
+
+# Prompt 2 — el juego se vuelve vivo
+
+Segunda vuelta de desarrollo sobre el motor ya existente: no se rehizo nada de lo de arriba, se lo extendió. Se jugó (leyendo el código y con el simulador, ver más abajo la limitación de entorno) antes de tocar nada, y los bugs de `TAREAS.md` que caían dentro del área tocada se resolvieron de paso (ver "Bugs de la vuelta anterior resueltos de paso").
+
+## Reparto de trabajo: qué se delegó y qué no, y por qué
+
+El plan original repartía siete frentes en subagentes paralelos (VFX, arte, asimetría/balance, economía, IA, sonido, testing). Al empezar a diseñar los contratos entre sistemas quedó claro que VFX, sonido y economía están **fuertemente acoplados a `Nave.ts` y `EscenaJuego.ts`** (escudos, banking, habilidades, chatarra y tecnología conviven en el mismo puñado de archivos centrales) — delegar esas piezas por separado habría significado, en la práctica, que varios agentes editaran los mismos archivos núcleo a la vez, con alto riesgo de pisarse. Se optó por una división distinta de la planeada originalmente:
+
+- **Hechos directamente por el orquestador** (arquitectura, `Nave.ts`/`Base.ts`/`Mina.ts`/`EscenaJuego.ts`/`HUD.ts`, VFX en `render/efectos.ts` y `render/vfx/`, sonido en `src/sonido/`, economía nueva): todo lo que tocaba los archivos núcleo compartidos, para garantizar un único punto de coherencia.
+- **Delegado a subagentes**, por tener una frontera de archivos limpia y verificable:
+  - **Arte**: las 2 naves nuevas y el pulido de luz/sombra/torretas/alas plegables del resto del roster, acotado a `src/render/dibujos/`.
+  - **Balance**: actualizar `herramientas/simulador-balance.ts` y ajustar números en `src/datos/balance.ts`.
+  - **IA**: adaptar `src/ia/MaquinaEstadosIA.ts` al nuevo contrato (ya extendido a mano en `interfazJuego.ts`/`AdaptadorJuego.ts` antes de delegar, exactamente para que la IA tuviera un contrato estable contra el cual trabajar en paralelo — el mismo patrón de desacople que ya se había usado en el prompt 1).
+  - **QA adversarial final**: revisión de código con foco en romper lo implementado.
+- Dos de estos subagentes (arte y balance) se cortaron a mitad de tarea por errores de conexión de la API, dejando el trabajo parcialmente hecho pero no roto (ambos habían aplicado sus cambios de a poco vía Edit, no en un solo paso final). Se resolvió terminando el balance a mano (ver más abajo) y relanzando un segundo subagente acotado solo a los 3 archivos de arte que habían quedado sin tocar.
+
+## Semi-3D: técnicas elegidas (todas evaluadas contra "qué rinde bien en Phaser sin WebGL 3D real")
+
+- **Banking (escora al girar)**: en vez de sprites prerenderizados por ángulo (costoso en arte y en memoria de texturas) o un motor 3D real, cada nave gira su casco hacia el rumbo objetivo con una **velocidad angular máxima por categoría** (`velocidadAngularMaxPorTipo` en `datos/escalas.ts`: cazas ~14 rad/s, casi instantáneo; crucero 1.6 rad/s, con inercia visible) en vez de saltar al ángulo exacto en el mismo frame. Sobre ese giro gradual se aplica un **achatado vertical (`scaleY`) + corrimiento en Y** proporcional a la velocidad angular instantánea y a una intensidad por categoría (`intensidadBankingPorTipo`), simulando un alabeo sin geometría 3D. Es puramente visual: el alcance de combate se sigue midiendo por distancia, no por hacia dónde mira el casco, así que no afecta el balance. Ver `Nave.rotarHacia()`.
+- **Sombra proyectada**: en vez de capturar la silueta real de cada nave con una `RenderTexture` (más fiel, pero una textura extra por nave y redibujos si la forma cambia), se usa una `Ellipse` barata por nave, con **una dirección de luz fija para todo el mapa** (no rota con la nave — el sol no se mueve) y un offset por tipo de nave (`offsetSombraPx`): los cazas "vuelan alto" (offset 14-16px), las naves grandes están pegadas al plano de batalla (crucero 4px). Ver `render/vfx/Sombras.ts`.
+- **Parallax**: 4 capas (polvo estelar lejano, campo de estrellas medio, nebulosas de color con blend aditivo, y un planeta gigante + restos de batalla) usando `setScrollFactor` nativo de Phaser en vez de reposicionar manualmente cada capa por frame — es la técnica más barata disponible y Phaser la resuelve solo en el paso de render. Ver `render/vfx/Parallax.ts`.
+- **Explosiones y pooling**: se reemplazó por completo el sistema de partículas por `Phaser.GameObjects.Particles.ParticleEmitter` **compartidos** — un emisor por "estilo" (fuego, chispa, humo, escombros por bando, estela de motor por bando), reutilizados durante toda la partida en vez de crear un `GameObject` nuevo por partícula. Los emisores se cachean por escena en un `WeakMap` y se invalidan solos al hacer `shutdown` de la escena (reinicio de partida), así nunca queda una referencia a un emisor ya destruido. Explosión por tamaño: caza (flash + bola de fuego breve + 2-3 escombros), media (más partículas y humo), grande/fragata-destructor (2-3 detonaciones internas encadenadas → explosión principal → escombros + humo persistente + screen shake sutil vía `camera.shake`), y crucero (evento especial: cadena de 4 detonaciones proa→popa, explosión final con onda expansiva, **el casco se parte en 3 fragmentos** que derivan por inercia con `tweens`, siguen detonando un rato y quedan flotando 15-25s antes de desvanecerse, screen shake marcado). Ver `render/efectos.ts`.
+- **Hallazgo de rendimiento durante testing (corregido)**: la estela de motor original (heredada tal cual del prompt 1) creaba un `Circle` + `tween` nuevo a mano cada 55ms **por cada nave viva**, sin pooling — con 30+ naves eso son ~1000 `GameObjects`/segundo solo para estelas, muy por encima de cualquier otro efecto del juego (las explosiones son eventos puntuales, no continuos). Se migró a un emisor compartido por bando (`emitParticleAt`), igual que el resto de los efectos. Era, con diferencia, el mayor riesgo real para los 60 FPS pedidos con batallas grandes.
+
+## Asimetría de bandos: números finales y qué mostró el simulador
+
+Se extendió `herramientas/simulador-balance.ts` para modelar escudos (absorben antes que la vida de casco, igual orden que `Nave.recibirDanio`) y costo-por-nave real de unidades con `cantidadPorOrden > 1` (el Rapaz cuesta 120cr **por tanda de 3**, es decir 40cr/nave efectivos). Con esas correcciones, se corrieron enfrentamientos Coalición-vs-Enjambre a costo por nave igual, tier por tier:
+
+| Tier (costo igual) | Resultado | Lectura |
+|---|---|---|
+| cazaLigero (Vencejo vs Rapaz) | Enjambre ~75-80% | La cantidad gana en el tier más barato, como se espera de esa identidad |
+| cazaPesado (Alabarda vs Alacrán) | Coalición ~90-94% | La Coalición es notablemente más fuerte en este tier específico (ver nota abajo) |
+| bombardero (Yunque vs Chacal) | ~50/50 | Parejo |
+| fragata (Bastión vs Espina) | Enjambre ~75-80% | Igual que cazaLigero: la cantidad vuelve a pesar más en unidades de línea |
+| Custodio vs Rapaz (escalando cantidad) | Igual que en el prompt 1: gana cómodo hasta ~1.6x su costo, pierde por encima | El escudo nuevo (300, regen 40/s) refuerza el punto pero no cambia el umbral cualitativo |
+| Custodio vs Devorador 1v1 | Coalición 100% | Intocable, como se pidió |
+
+**Nota sobre la volatilidad del tier cazaPesado**: durante el ajuste se encontró que este enfrentamiento puntual (5 Alabarda vs 6 Alacrán) es extremadamente sensible a cambios chicos — mover la cadencia de fuego del Alacrán de 620ms a 635ms (2.4% de diferencia) invirtió el resultado de 92%-7% a favor de un bando a 92%-7% a favor del otro. Esto es una propiedad del modelo de combate por bajas en grupos chicos (el primer bando que pierde una unidad entra en una espiral de menor daño total, y con pocas unidades ese primer golpe es determinante), no un indicio de que el resto del balance sea igual de frágil — los tiers con más unidades (cazaLigero, fragata) mostraron resultados estables entre corridas. Se dejó documentado acá para que cualquier ajuste futuro al Alabarda/Alacrán se haga sabiendo que este par en particular tiene un punto de quiebre angosto, y se optó por no perseguir un 50/50 artificial en un enfrentamiento tan chico e inestable — la imagen general (dos tiers favorecen al Enjambre, uno a la Coalición, uno parejo) ya evita que una sola identidad domine el juego completo.
+
+Números finales completos en `src/datos/balance.ts`; el resumen de identidad:
+
+- **Coalición** = calidad: costos y tiempos de producción más altos, escudo regenerativo en toda su flota (se recarga solo tras 3s sin recibir daño — `ESCUDOS.retrasoRegenMs`), más vida de casco en las naves grandes.
+- **Enjambre** = cantidad: costos más bajos, producción más rápida, sin escudos, y el Rapaz (caza liviano) sale en **tandas de 3 por orden** (`cantidadPorOrden: 3` en `balance.ts`) — una sola orden de producción entrega las 3 naves de una vez, en `EscenaJuego.spawnearNave` llamado en loop al completarse la orden en `Base.actualizarProduccion`.
+
+## Naves nuevas
+
+- **Estilete** (interceptor, Coalición, nivel 2, exclusivo): 260cr, 55 de vida + 55 de escudo, 210px/s (la nave más rápida del juego), 22 de daño, cadencia de 420ms. Bonus de contra 1.6x contra cazaPesado y 2x contra bombardero (`TRIANGULO_CONTRAS.interceptor`) — su rol es cazar naves de apoyo rivales antes de que hagan su trabajo, no ganar enjambres de cazas livianos de su mismo costo (pierde consistentemente esos enfrentamientos: es una espada de precisión, no una que gane 1 contra 7). El cazaPesado es su contra dedicada (1.4x de vuelta), así que no es un ciclo absoluto.
+- **Guadaña** (destructor esquelético, Enjambre, nivel 3, exclusivo): 620cr, 650 de vida (sin escudo), 32 de daño con área 40px, más barato y rápido de construir que el Devorador (32s vs 55s de producción) pero con mucha menos vida por crédito invertido — "se rompe fácil". Le da al Enjambre una segunda opción de nivel 3 además del propio crucero, reforzando la fantasía de cantidad incluso en el tramo final del árbol tecnológico. Balance final: parejo contra fragatas/cazas pesados de costo similar, dominante contra cazas livianos (sin sorpresa, es un semi-capital).
+- Ambas naves tienen una entrada "inerte" en el bando contrario (`exclusivaDe` en `DatosUnidad`) solo para que el `Record<Faccion, Record<TipoUnidad, DatosUnidad>>` sea exhaustivo — `unidadDisponible()` en `balance.ts` filtra esas entradas y es la función que HUD, `Base.puedeProducir` y la IA usan siempre en vez de comparar `nivelBaseRequerido` a mano.
+
+## Habilidades activas de crucero
+
+- **Custodio (Coalición) — Andanada total**: cooldown 30s, descarga el daño base ×3.2 contra todo enemigo dentro de 1.1x su alcance y un cono frontal de 110° respecto de su rumbo actual. Implementada en `Nave.activarHabilidad()`, sin sistema aparte: reutiliza `aplicarDanio` y `crearDisparo` tal cual el combate normal.
+- **Devorador (Enjambre) — Enjambre de emergencia**: cooldown 35s, libera 5 cazas Rapaz gratis con 20s de vida útil (`vidaUtilMs` en `Nave`, un dron se autodestruye solo — sin explosión ni chatarra — al agotarse, y dejar de contar como vivo un frame antes de iniciar el fade para no quedar "zombie" bloqueando el pool de objetivos ni el cálculo de poder de la IA).
+- Botón + anillo de cooldown en el HUD, visible solo cuando el jugador tiene un crucero propio seleccionado (`HUD.actualizarSeleccion`).
+
+## Economía nueva
+
+- **Minas ricas**: 2 de las 8 minas (las del centro del mapa, `POSICIONES_MINAS[...].rica` en `datos/mapa.ts`) rinden el doble de ingreso base y se dibujan más grandes con un halo dorado.
+- **Mejora de mina**: 150cr, +50% ingreso y +50% vida máxima, se pierde si la mina es destruida (`Mina.recibirDanio` resetea `nivelMejora` a 0 y `vidaMax` a la base al llegar a 0 de vida). Se selecciona con un click izquierdo sobre una mina propia (extensión nueva de `GestorSeleccion`, antes solo seleccionaba naves) y se compra con un botón contextual en el HUD.
+- **Árbol tecnológico**: 2 ramas × 2 niveles por bando (`src/sistemas/Tecnologia.ts`). Armamento: +8%/nivel de daño, aplicado **en vivo** a toda la flota existente (se lee en el momento de disparar, no al construir la nave). Casco/Escudos: +10%/nivel de vida máxima, aplicado solo a naves construidas **después** de comprarlo (decisión explícita: aplicar retroactivamente a naves ya vivas es ambiguo con la barra de vida actual — ¿se llenan solas al instante?, así que se optó por el modelo más simple y predecible de "afecta lo que construyas de ahora en más"); además, Coalición gana +25%/nivel de velocidad de regeneración de escudo, Enjambre gana -12%/nivel de tiempo de producción (interpretado como el bono más coherente con cada identidad).
+- **Chatarra**: las naves con `escalaVisual >= 3` (fragata, destructor, crucero) dejan un botín al morir por el 16% de su costo, recolectable por **cualquier nave de cualquier bando** que pase cerca (la primera que llega se lo queda) — no es "para quien la destruyó", es un recurso neutral en el campo de batalla, reforzando que pelear cerca de las propias líneas paga. Se desvanece sola a los 45s si nadie la recoge.
+
+## Sonido
+
+Todo generado por código con Web Audio API (osciladores + un buffer de ruido reutilizado), sin archivos de audio (`src/sonido/index.ts`). El láser suena distinto por bando a propósito: la Coalición un golpe seco tipo cañón (onda triangular, cae de agudo a grave), el Enjambre algo más chirriante/eléctrico (onda sawtooth con dos rampas de frecuencia). Las explosiones escalan de intensidad con la categoría (igual clasificación que el VFX). Volumen ajustable y mute vía `setSilenciado`/`estaSilenciado`, con botón en el HUD. El `AudioContext` se crea recién en el primer sonido reproducido — para entonces ya hubo un click del jugador en el menú, así que los navegadores no lo bloquean por política de autoplay.
+
+## Torpedos del bombardero
+
+El bombardero dejó de ser hitscan: dispara un **proyectil real** (`src/entidades/Torpedo.ts`) que vuela a 230px/s con un guiado leve (corrige su rumbo hacia la posición actual del objetivo, pero no instantáneamente) y aplica el daño recién al llegar. Si el objetivo se aleja lo bastante antes de que el torpedo lo alcance, el torpedo agota su vida útil (3.2s) y falla — así es "interceptable" sin necesitar un sistema de defensa antimisiles dedicado: alcanza con que el blanco tenga buena movilidad. El resto de las naves siguen disparando hitscan (decisión del prompt 1, sin cambios).
+
+## IA: qué se le agregó
+
+Se extendió el contrato `ApiJuegoParaIA` (`src/ia/interfazJuego.ts`) con mejora de minas, tecnología y habilidad de crucero, y se implementó en `AdaptadorJuego.ts`, **antes** de delegar la lógica de decisión a un subagente — el mismo patrón de desacople IA/motor del prompt 1, ahora reforzado. La IA resultante: usa `unidadDisponible()` para no reintroducir naves espejo, agrega la Guadaña como segunda opción de nivel 3 en fase de ataque, activa su habilidad de crucero cuando tiene enemigos cerca (para no desperdiciar drones de vida corta sin nadie a quien pelear), prioriza minas ricas al capturar/hostigar (con un factor que abarata su distancia efectiva), y mejora minas propias sin rivales cerca (evita invertir en una mina del frente que se puede perder) y compra tecnología oportunísticamente cuando le sobran créditos.
+
+## Testing sin navegador disponible (igual limitación que en el prompt 1)
+
+Tampoco esta vez hubo extensión de Chrome conectada. Verificación con:
+
+1. `npx tsc --noEmit` y `npm run build` limpios en cada paso.
+2. El simulador de balance extendido (escudos + costo por tanda), corrido y reajustado iterativamente hasta un resultado sano por tier (ver arriba).
+3. Una ronda de QA adversarial dedicada (agente `qa-senior`, solo lectura de código) enfocada en los escenarios pedidos explícitamente. Encontró y se corrigió:
+   - **[Alto] Signo invertido en la tecnología de producción del Enjambre**: `calcularModificadores` en `src/sistemas/Tecnologia.ts` restaba el bono en vez de sumarlo, así que comprar la rama Casco/Escudos hacía la producción del Enjambre **más lenta**, no más rápida — el opuesto exacto de lo documentado y de lo que la IA asumía al comprarla oportunísticamente. Corregido (`1 + niveles.defensa * BONO...` en vez de `1 -`).
+   - **[Medio] Sesgo de orden en la recolección de chatarra**: `actualizarChatarra` en `src/sistemas/Economia.ts` se quedaba con la primera nave dentro de rango en vez de la más cercana; como el array de naves siempre trae primero a la Coalición, en cualquier empate ganaba la Coalición aunque una nave del Enjambre estuviera objetivamente más cerca. Corregido para comparar distancias explícitamente.
+   - **[Alto, por lectura de código] Tres efectos más sin pooling** que podían reproducir el mismo problema ya encontrado en la estela de motor a escala de batalla masiva: el haz de disparo (`crearDisparo`, dos `Line` por cada tiro de cada nave armada), el destello de escudo (`crearDestelloEscudo`, disparado por casi toda la flota de Coalición al absorber daño) y el humo/fuego de daño progresivo (`DanioProgresivo.ts`, disparado por cada nave dañada cada 220ms). Los tres se migraron a los emisores compartidos (`crearDisparo` ahora recicla un pool fijo de 32 `Line`, en vez de un `ParticleEmitter` que no representa bien un haz direccional; escudo y daño progresivo pasaron a usar los mismos emisores compartidos que las explosiones).
+   - Confirmado **sin bug** (con evidencia, no solo "no se probó"): spam de habilidad de crucero (el cooldown se fija de forma síncrona, sin ventana de carrera posible en JS de un solo hilo), mejora de mina en el instante de su destrucción, doble cobro de chatarra, cobro único de la producción por tandas del Rapaz, reseteo de tecnología/chatarra/torpedos entre partidas, drones temporales que dejan de contar como vivos apenas expiran, y que el multiplicador de dificultad no se filtra a la IA ni a ningún sistema económico nuevo.
+4. Revisión manual línea por línea de `Nave.ts`, `EscenaJuego.ts`, `Mina.ts`, `Seleccion.ts` y `HUD.ts` (hecha por el orquestador antes de la ronda de QA) — se encontraron y corrigieron dos bugs propios durante esa revisión: un dron temporal que reiniciaba su animación de desvanecimiento en cada frame en vez de una sola vez (por no marcar `vida = 0` antes de empezar el fade), y un valor de chatarra hardcodeado en `Nave.ts` que debía leerse de `CHATARRA` en `balance.ts`.
+
+**Sigue sin reemplazar una sesión de juego real.** Se recomienda como primer paso de la próxima sesión jugar al menos una partida completa con cada bando, prestando atención especial a: la sensación de banking/sombras/parallax en movimiento real (no solo en el código), el "peso" de la muerte del crucero, si las 7 naves nuevas/existentes por bando se sienten distintas al jugarlas, y si el tier cazaPesado se siente tan desbalanceado en la práctica como en el simulador (ver nota de volatilidad arriba).
+
+## Bugs de la vuelta anterior resueltos de paso
+
+- **Selección por arrastre sobre la franja del HUD** (prioridad baja en `TAREAS.md`): el rectángulo de selección dibujado ahora se recorta contra el borde superior del HUD (`Seleccion.alPointerMove`); la selección en coordenadas de mundo ya era correcta antes, esto era puramente visual.

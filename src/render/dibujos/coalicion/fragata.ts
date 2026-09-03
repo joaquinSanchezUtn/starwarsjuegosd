@@ -4,6 +4,18 @@ import { UNIDADES } from '../../../datos/balance.ts';
 import { LARGO_BASE_PX } from '../../../datos/escalas.ts';
 import { PALETA } from '../../../datos/colores.ts';
 
+/** Torreta simple (base + cañón corto) para el sub-contenedor rotable que Nave.ts apunta al blanco. */
+function crearTorreta(escena: Phaser.Scene, p: typeof PALETA.coalicion, largo: number, x: number, y: number): Phaser.GameObjects.Container {
+  const torreta = new Phaser.GameObjects.Container(escena, x, y);
+  const gt = new Phaser.GameObjects.Graphics(escena);
+  gt.fillStyle(p.cascoOscuro, 1);
+  gt.fillCircle(0, 0, largo * 0.045);
+  gt.fillStyle(p.detalle, 1);
+  gt.fillRect(0, -largo * 0.014, largo * 0.11, largo * 0.028);
+  torreta.add(gt);
+  return torreta;
+}
+
 /**
  * Bastión: cuña maciza y lisa (nariz angosta, popa ancha), torre de mando
  * en T cerca de la popa y dos hileras de cañones chicos a los costados.
@@ -16,15 +28,31 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
   const tailX = -largo * 0.5;
   const anchoPopa = largo * 0.32;
 
-  // Cuña principal.
+  // Cuña principal: mitad superior iluminada, mitad inferior en sombra
+  // (luz direccional fija arriba-izquierda; silueta exterior sin cambios).
+  const medioPopa = { x: tailX, y: 0 };
   g.fillStyle(p.casco, 1);
+  g.beginPath();
+  g.moveTo(noseX, 0);
+  g.lineTo(tailX, -anchoPopa);
+  g.lineTo(medioPopa.x, medioPopa.y);
+  g.closePath();
+  g.fillPath();
+
+  g.fillStyle(p.cascoOscuro, 1);
+  g.beginPath();
+  g.moveTo(noseX, 0);
+  g.lineTo(medioPopa.x, medioPopa.y);
+  g.lineTo(tailX, anchoPopa);
+  g.closePath();
+  g.fillPath();
+
   g.lineStyle(Math.max(1.5, largo * 0.014), p.acento, 1);
   g.beginPath();
   g.moveTo(noseX, 0);
   g.lineTo(tailX, anchoPopa);
   g.lineTo(tailX, -anchoPopa);
   g.closePath();
-  g.fillPath();
   g.strokePath();
 
   // Torre de mando en T, cerca de la popa.
@@ -47,5 +75,10 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
     g.fillCircle(x, -anchoLocal, largo * 0.014);
   }
 
+  // Torreta dorsal rotable, montada al centro del casco.
+  const torreta = crearTorreta(escena, p, largo, -largo * 0.04, 0);
+  contenedor.setData('torretas', [torreta]);
+
   contenedor.add(g);
+  contenedor.add(torreta);
 }

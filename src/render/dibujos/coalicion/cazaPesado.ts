@@ -13,6 +13,24 @@ function poligono(g: Phaser.GameObjects.Graphics, puntos: { x: number; y: number
   g.strokePath();
 }
 
+/** Igual que `poligono` pero solo relleno, sin trazo (para partir una forma en mitad luz/sombra). */
+function relleno(g: Phaser.GameObjects.Graphics, puntos: { x: number; y: number }[]): void {
+  g.beginPath();
+  g.moveTo(puntos[0].x, puntos[0].y);
+  for (let i = 1; i < puntos.length; i++) g.lineTo(puntos[i].x, puntos[i].y);
+  g.closePath();
+  g.fillPath();
+}
+
+/** Igual que `poligono` pero solo trazo, sin relleno (para redibujar el contorno completo tras rellenar por mitades). */
+function contorno(g: Phaser.GameObjects.Graphics, puntos: { x: number; y: number }[]): void {
+  g.beginPath();
+  g.moveTo(puntos[0].x, puntos[0].y);
+  for (let i = 1; i < puntos.length; i++) g.lineTo(puntos[i].x, puntos[i].y);
+  g.closePath();
+  g.strokePath();
+}
+
 /**
  * Alabarda: fuselaje largo y robusto, cabina alargada al centro, nariz
  * prominente y dos alas grandes cuya punta se parte en tijera (doble punta
@@ -26,10 +44,11 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
   const tailX = -largo * 0.5;
   const anchoFuselaje = largo * 0.22;
 
-  // Alas con punta en tijera (V).
-  g.fillStyle(p.casco, 1);
+  // Alas con punta en tijera (V). Luz arriba-izquierda: ala superior (y<0)
+  // iluminada, inferior (y>0) en sombra.
   g.lineStyle(Math.max(1, largo * 0.025), p.cascoOscuro, 1);
   for (const s of [1, -1]) {
+    g.fillStyle(s < 0 ? p.casco : p.cascoOscuro, 1);
     poligono(g, [
       { x: largo * 0.06, y: s * anchoFuselaje * 0.4 },
       { x: -largo * 0.22, y: s * largo * 0.5 },
@@ -39,10 +58,24 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
     ]);
   }
 
-  // Fuselaje principal.
+  // Fuselaje principal: mitad superior iluminada, mitad inferior en sombra
+  // (ya tiene puntos a y=0 en nariz y popa, el corte es exacto).
   g.fillStyle(p.casco, 1);
+  relleno(g, [
+    { x: noseX, y: 0 },
+    { x: largo * 0.28, y: -anchoFuselaje * 0.5 },
+    { x: tailX + largo * 0.1, y: -anchoFuselaje * 0.5 },
+    { x: tailX, y: 0 },
+  ]);
+  g.fillStyle(p.cascoOscuro, 1);
+  relleno(g, [
+    { x: noseX, y: 0 },
+    { x: tailX, y: 0 },
+    { x: tailX + largo * 0.1, y: anchoFuselaje * 0.5 },
+    { x: largo * 0.28, y: anchoFuselaje * 0.5 },
+  ]);
   g.lineStyle(Math.max(1, largo * 0.035), p.cascoOscuro, 1);
-  poligono(g, [
+  contorno(g, [
     { x: noseX, y: 0 },
     { x: largo * 0.28, y: anchoFuselaje * 0.5 },
     { x: tailX + largo * 0.1, y: anchoFuselaje * 0.5 },

@@ -13,6 +13,24 @@ function poligono(g: Phaser.GameObjects.Graphics, puntos: { x: number; y: number
   g.strokePath();
 }
 
+/** Igual que `poligono` pero solo relleno, sin trazo (para partir una forma en mitad luz/sombra). */
+function relleno(g: Phaser.GameObjects.Graphics, puntos: { x: number; y: number }[]): void {
+  g.beginPath();
+  g.moveTo(puntos[0].x, puntos[0].y);
+  for (let i = 1; i < puntos.length; i++) g.lineTo(puntos[i].x, puntos[i].y);
+  g.closePath();
+  g.fillPath();
+}
+
+/** Igual que `poligono` pero solo trazo, sin relleno (para redibujar el contorno completo tras rellenar por mitades). */
+function contorno(g: Phaser.GameObjects.Graphics, puntos: { x: number; y: number }[]): void {
+  g.beginPath();
+  g.moveTo(puntos[0].x, puntos[0].y);
+  for (let i = 1; i < puntos.length; i++) g.lineTo(puntos[i].x, puntos[i].y);
+  g.closePath();
+  g.strokePath();
+}
+
 /**
  * Vencejo: tríada — cuerpo central angosto con cabina burbuja, una aleta
  * dorsal fina que sobresale hacia atrás (sugerida con un triángulo delgado
@@ -27,9 +45,11 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
   const noseX = largo * 0.5;
 
   // Alas inferiores (Y invertida): raíz en la cola, puntas adelante-afuera.
-  g.fillStyle(p.casco, 1);
+  // Luz direccional fija arriba-izquierda: el ala superior (y<0) queda
+  // iluminada con el casco normal, la inferior (y>0) en sombra.
   g.lineStyle(Math.max(1, largo * 0.035), p.cascoOscuro, 1);
   for (const s of [1, -1]) {
+    g.fillStyle(s < 0 ? p.casco : p.cascoOscuro, 1);
     poligono(g, [
       { x: tailX * 0.95, y: s * largo * 0.05 },
       { x: -largo * 0.02, y: s * largo * 0.44 },
@@ -55,10 +75,24 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
   g.fillStyle(p.cascoOscuro, 1);
   g.fillTriangle(-largo * 0.04, 0, tailX * 1.12, largo * 0.045, tailX * 1.12, -largo * 0.045);
 
-  // Cuerpo central.
+  // Cuerpo central: mitad superior iluminada, mitad inferior en sombra.
+  const cuerpoMedioTail = { x: tailX * 0.8, y: 0 };
   g.fillStyle(p.casco, 1);
+  relleno(g, [
+    { x: noseX, y: 0 },
+    { x: largo * 0.14, y: -largo * 0.12 },
+    { x: tailX * 0.8, y: -largo * 0.08 },
+    cuerpoMedioTail,
+  ]);
+  g.fillStyle(p.cascoOscuro, 1);
+  relleno(g, [
+    { x: noseX, y: 0 },
+    cuerpoMedioTail,
+    { x: tailX * 0.8, y: largo * 0.08 },
+    { x: largo * 0.14, y: largo * 0.12 },
+  ]);
   g.lineStyle(Math.max(1, largo * 0.045), p.cascoOscuro, 1);
-  poligono(g, [
+  contorno(g, [
     { x: noseX, y: 0 },
     { x: largo * 0.14, y: largo * 0.12 },
     { x: tailX * 0.8, y: largo * 0.08 },

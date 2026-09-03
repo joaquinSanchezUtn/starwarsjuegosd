@@ -13,6 +13,24 @@ function poligono(g: Phaser.GameObjects.Graphics, puntos: { x: number; y: number
   g.strokePath();
 }
 
+/** Igual que `poligono` pero solo relleno, sin trazo (para partir una forma en mitad luz/sombra). */
+function relleno(g: Phaser.GameObjects.Graphics, puntos: { x: number; y: number }[]): void {
+  g.beginPath();
+  g.moveTo(puntos[0].x, puntos[0].y);
+  for (let i = 1; i < puntos.length; i++) g.lineTo(puntos[i].x, puntos[i].y);
+  g.closePath();
+  g.fillPath();
+}
+
+/** Igual que `poligono` pero solo trazo, sin relleno (para redibujar el contorno completo tras rellenar por mitades). */
+function contorno(g: Phaser.GameObjects.Graphics, puntos: { x: number; y: number }[]): void {
+  g.beginPath();
+  g.moveTo(puntos[0].x, puntos[0].y);
+  for (let i = 1; i < puntos.length; i++) g.lineTo(puntos[i].x, puntos[i].y);
+  g.closePath();
+  g.strokePath();
+}
+
 /**
  * Chacal: primo achatado del Rapaz. Misma cabeza angosta con ojos rojos,
  * pero cuerpo más ancho y chato, alas extendidas horizontales, con óvalos
@@ -25,10 +43,11 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
   const noseX = largo * 0.5;
   const tailX = -largo * 0.5;
 
-  // Alas horizontales extendidas, anchas y chatas.
-  g.fillStyle(p.casco, 1);
+  // Alas horizontales extendidas, anchas y chatas. Luz arriba-izquierda:
+  // ala superior (y<0) iluminada, inferior (y>0) en sombra.
   g.lineStyle(Math.max(1, largo * 0.025), p.cascoOscuro, 1);
   for (const s of [1, -1]) {
+    g.fillStyle(s < 0 ? p.casco : p.cascoOscuro, 1);
     poligono(g, [
       { x: largo * 0.15, y: s * largo * 0.06 },
       { x: -largo * 0.05, y: s * largo * 0.48 },
@@ -37,9 +56,23 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
     ]);
   }
 
-  // Cuerpo chato y ancho.
+  // Cuerpo chato y ancho: mitad superior iluminada, mitad inferior en sombra.
+  const medioCuerpoTail = { x: tailX * 0.65, y: 0 };
   g.fillStyle(p.casco, 1);
-  poligono(g, [
+  relleno(g, [
+    { x: noseX, y: 0 },
+    { x: largo * 0.18, y: -largo * 0.14 },
+    { x: tailX * 0.65, y: -largo * 0.16 },
+    medioCuerpoTail,
+  ]);
+  g.fillStyle(p.cascoOscuro, 1);
+  relleno(g, [
+    { x: noseX, y: 0 },
+    medioCuerpoTail,
+    { x: tailX * 0.65, y: largo * 0.16 },
+    { x: largo * 0.18, y: largo * 0.14 },
+  ]);
+  contorno(g, [
     { x: noseX, y: 0 },
     { x: largo * 0.18, y: largo * 0.14 },
     { x: tailX * 0.65, y: largo * 0.16 },
@@ -47,14 +80,22 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
     { x: largo * 0.18, y: -largo * 0.14 },
   ]);
 
-  // Cabeza angosta reconocible (parentesco visual con el Rapaz).
-  g.fillStyle(p.cascoOscuro, 1);
-  poligono(g, [
+  // Cabeza angosta reconocible (parentesco visual con el Rapaz): mitad
+  // superior clara, mitad inferior en sombra (tono cascoOscuro original).
+  const medioCabezaTail = { x: largo * 0.1, y: 0 };
+  g.fillStyle(p.casco, 1);
+  relleno(g, [
     { x: noseX, y: 0 },
-    { x: largo * 0.22, y: largo * 0.05 },
-    { x: largo * 0.1, y: largo * 0.05 },
-    { x: largo * 0.1, y: -largo * 0.05 },
     { x: largo * 0.22, y: -largo * 0.05 },
+    { x: largo * 0.1, y: -largo * 0.05 },
+    medioCabezaTail,
+  ]);
+  g.fillStyle(p.cascoOscuro, 1);
+  relleno(g, [
+    { x: noseX, y: 0 },
+    medioCabezaTail,
+    { x: largo * 0.1, y: largo * 0.05 },
+    { x: largo * 0.22, y: largo * 0.05 },
   ]);
 
   // Ojos rojos.

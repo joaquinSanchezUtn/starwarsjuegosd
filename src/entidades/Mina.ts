@@ -2,9 +2,14 @@
 // bando cerca, genera créditos por segundo mientras está controlada, puede
 // ser destruida a tiros (vuelve a neutral tras un tiempo) o recapturada
 // directamente por el rival parando una nave al lado.
+//
+// PROMPT 2 — economía: las minas "ricas" (centro del mapa) rinden el doble;
+// cualquier mina propia puede mejorarse pagando créditos (+50% ingreso y
+// +50% vida), pero la mejora se pierde si la mina es destruida — invertir en
+// una mina expuesta es una apuesta.
 import Phaser from 'phaser';
 import type { Faccion, ObjetivoAtacable, TipoUnidad } from '../nucleo/tipos.ts';
-import { MINA } from '../datos/balance.ts';
+import { MINA, MEJORA_MINA } from '../datos/balance.ts';
 import { RADIO_MINA_PX } from '../datos/escalas.ts';
 import { COLOR_MINA_NEUTRAL, PALETA } from '../datos/colores.ts';
 import { crearAnilloCaptura, type AnilloCaptura } from '../render/efectos.ts';
@@ -14,10 +19,13 @@ let proximoId = 1;
 export class Mina extends Phaser.GameObjects.Container implements ObjetivoAtacable {
   readonly id: number;
   readonly tipoObjetivo = 'mina' as const;
+  readonly esRica: boolean;
   vida: number;
-  vidaMax = MINA.vidaMax;
+  vidaMax: number;
   duenio: Faccion | null = null;
   destruida = false;
+  /** 0 = sin mejorar, 1 = mejorada (+50% ingreso, +50% vida máxima) */
+  nivelMejora: 0 | 1 = 0;
   private tiempoRegenRestanteMs = 0;
 
   /** progreso de captura en curso, si hay alguna facción capturando en soledad */
@@ -27,15 +35,46 @@ export class Mina extends Phaser.GameObjects.Container implements ObjetivoAtacab
   private grafico: Phaser.GameObjects.Graphics;
   private anillo: AnilloCaptura | null = null;
 
-  constructor(escena: Phaser.Scene, x: number, y: number) {
+  constructor(escena: Phaser.Scene, x: number, y: number, esRica = false) {
     super(escena, x, y);
     this.id = proximoId++;
+    this.esRica = esRica;
+    this.vidaMax = MINA.vidaMax;
     this.vida = this.vidaMax;
     this.grafico = new Phaser.GameObjects.Graphics(escena);
     this.add(this.grafico);
     this.redibujar();
     escena.add.existing(this);
     this.setDepth(5);
+  }
+
+  /** Ingreso por segundo que aporta esta mina, ya con los bonos de filón rico y mejora aplicados. */
+  get ingresoPorSegundo(): number {
+    if (this.destruida || !this.duenio) return 0;
+    let ingreso = MINA.ingresoPorSegundo;
+    if (this.esRica) ingreso *= MEJORA_MINA.multiplicadorMinaRica;
+    if (this.nivelMejora === 1) ingreso *= 1 + MEJORA_MINA.bonoIngresoFraccion;
+    return ingreso;
+  }
+
+  costoMejora(): number {
+    return MEJORA_MINA.costo;
+  }
+
+  puedeMejorar(faccionQueIntenta: Faccion): boolean {
+    return !this.destruida && this.duenio === faccionQueIntenta && this.nivelMejora === 0;
+  }
+
+  /** Intenta mejorar la mina. Devuelve el costo descontado, o 0 si no se pudo. */
+  intentarMejorar(faccionQueIntenta: Faccion, creditosDisponibles: number): number {
+    if (!this.puedeMejorar(faccionQueIntenta)) return 0;
+    if (creditosDisponibles < MEJORA_MINA.costo) return 0;
+    this.nivelMejora = 1;
+    const fraccionVidaActual = this.vida / this.vidaMax;
+    this.vidaMax = MINA.vidaMax * (1 + MEJORA_MINA.bonoVidaFraccion);
+    this.vida = this.vidaMax * fraccionVidaActual;
+    this.redibujar();
+    return MEJORA_MINA.costo;
   }
 
   get faccion(): Faccion {
@@ -56,6 +95,10 @@ export class Mina extends Phaser.GameObjects.Container implements ObjetivoAtacab
       this.vida = 0;
       this.destruida = true;
       this.duenio = null;
+      // Destruida: se pierde la mejora que tuviera (invertir en una mina
+      // expuesta es una apuesta, tal como se pidió).
+      this.nivelMejora = 0;
+      this.vidaMax = MINA.vidaMax;
       this.tiempoRegenRestanteMs = MINA.tiempoRegeneracionMs;
       this.faccionCapturando = null;
       this.progresoCapturaMs = 0;
@@ -116,6 +159,7 @@ export class Mina extends Phaser.GameObjects.Container implements ObjetivoAtacab
       this.anillo?.destroy();
       this.anillo = null;
       this.redibujar();
+      this.emit('capturada', faccion);
     }
   }
 
@@ -144,14 +188,31 @@ export class Mina extends Phaser.GameObjects.Container implements ObjetivoAtacab
       this.grafico.lineBetween(-6, 6, 6, -6);
       return;
     }
+    // Las minas ricas se dibujan más grandes y con un halo extra, para que
+    // se distingan a simple vista como las más valiosas (y más peleadas).
+    const radio = this.esRica ? RADIO_MINA_PX * 1.35 : RADIO_MINA_PX;
     const color = this.duenio ? PALETA[this.duenio].acento : COLOR_MINA_NEUTRAL;
     const relleno = this.duenio ? PALETA[this.duenio].casco : 0x3a3d44;
+
+    if (this.esRica) {
+      this.grafico.fillStyle(0xffd76a, 0.16);
+      this.grafico.fillCircle(0, 0, radio * 1.55);
+      this.grafico.lineStyle(1.5, 0xffd76a, 0.55);
+      this.grafico.strokeCircle(0, 0, radio * 1.22);
+    }
+
     this.grafico.fillStyle(relleno, 1);
     this.grafico.lineStyle(3, color, 1);
-    this.grafico.fillCircle(0, 0, RADIO_MINA_PX);
-    this.grafico.strokeCircle(0, 0, RADIO_MINA_PX);
+    this.grafico.fillCircle(0, 0, radio);
+    this.grafico.strokeCircle(0, 0, radio);
     // cristal/nucleo interior
     this.grafico.fillStyle(color, 1);
-    this.grafico.fillCircle(0, 0, RADIO_MINA_PX * 0.35);
+    this.grafico.fillCircle(0, 0, radio * 0.35);
+
+    // Anillo dorado extra si está mejorada.
+    if (this.nivelMejora === 1) {
+      this.grafico.lineStyle(2, 0xffd76a, 0.9);
+      this.grafico.strokeCircle(0, 0, radio + 5);
+    }
   }
 }

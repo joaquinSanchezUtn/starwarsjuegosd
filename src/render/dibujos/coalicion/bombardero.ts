@@ -19,12 +19,13 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
   const tuboLargo = largo * 0.8;
   const tuboX = tailX + largo * 0.02;
 
-  g.fillStyle(p.casco, 1);
   g.lineStyle(Math.max(1, largo * 0.03), p.cascoOscuro, 1);
 
-  // Motores gemelos.
+  // Motores gemelos. Luz arriba-izquierda: el tubo superior (y<0) iluminado,
+  // el inferior (y>0) en sombra.
   for (const s of [1, -1]) {
     const centroY = s * largo * 0.22;
+    g.fillStyle(s < 0 ? p.casco : p.cascoOscuro, 1);
     g.fillRect(tuboX, centroY - tuboAncho / 2, tuboLargo, tuboAncho);
     g.strokeRect(tuboX, centroY - tuboAncho / 2, tuboLargo, tuboAncho);
     // Aros transversales.
@@ -41,9 +42,13 @@ export function dibujar(contenedor: Phaser.GameObjects.Container, escena: Phaser
   g.fillRect(largo * 0.02, -largo * 0.07, largo * 0.16, largo * 0.14);
   g.strokeRect(largo * 0.02, -largo * 0.07, largo * 0.16, largo * 0.14);
 
-  // Cabina bulbosa (gota/óvalo) al frente.
-  g.fillStyle(p.casco, 1);
+  // Cabina bulbosa (gota/óvalo) al frente: base en sombra, capa superior
+  // más clara y desplazada arriba-izquierda aproximando la mitad iluminada
+  // (silueta exterior intacta: el trazo sigue el óvalo completo original).
+  g.fillStyle(p.cascoOscuro, 1);
   g.fillEllipse(noseX - largo * 0.24, 0, largo * 0.42, largo * 0.34);
+  g.fillStyle(p.casco, 1);
+  g.fillEllipse(noseX - largo * 0.24, -largo * 0.06, largo * 0.4, largo * 0.22);
   g.strokeEllipse(noseX - largo * 0.24, 0, largo * 0.42, largo * 0.34);
   g.fillStyle(p.detalle, 0.9);
   g.fillEllipse(noseX - largo * 0.28, 0, largo * 0.18, largo * 0.16);

@@ -3,7 +3,7 @@
 // entidades. El motor (EscenaJuego) implementa ApiJuegoParaIA con un
 // adaptador real; así la lógica de la IA se puede escribir y testear en
 // paralelo al resto del motor.
-import type { Faccion, TipoUnidad, NivelBase } from '../nucleo/tipos.ts';
+import type { Faccion, TipoUnidad, NivelBase, NivelesTecnologia } from '../nucleo/tipos.ts';
 
 export interface InfoUnidadIA {
   id: number;
@@ -27,6 +27,19 @@ export interface InfoMinaIA {
   vidaMax: number;
   /** true mientras está destruida, esperando regenerarse */
   destruida: boolean;
+  /** las minas ricas (centro del mapa) rinden el doble de ingreso */
+  esRica: boolean;
+  /** 0 = sin mejorar, 1 = mejorada (+50% ingreso, +50% vida; se pierde si la destruyen) */
+  nivelMejora: 0 | 1;
+  /** costo de mejorarla ahora, o 0 si ya no se puede (destruida/ajena/ya mejorada) */
+  costoMejora: number;
+}
+
+/** Nave capital viva con habilidad activa lista para usarse (o no). */
+export interface InfoHabilidadCruceroIA {
+  idNave: number;
+  lista: boolean;
+  progreso01: number;
 }
 
 export interface InfoBaseIA {
@@ -59,4 +72,19 @@ export interface ApiJuegoParaIA {
   ordenarCapturar(idsUnidades: number[], idMina: number): void;
   /** Dimensiones del mundo, para no ordenar movimientos fuera de mapa. */
   obtenerLimitesMundo(): { ancho: number; alto: number };
+
+  // --- Prompt 2: economía nueva, tecnología y habilidades -----------------
+
+  /** Intenta mejorar una mina propia (+50% ingreso, +50% vida). false si no se pudo pagar/no corresponde. */
+  mejorarMina(faccion: Faccion, idMina: number): boolean;
+  /** Niveles comprados del árbol tecnológico (0-2 por rama). */
+  obtenerNivelesTecnologia(faccion: Faccion): NivelesTecnologia;
+  /** Costo de subir `rama` al siguiente nivel, o 0 si ya está al máximo. */
+  costoProximoNivelTecnologia(faccion: Faccion, rama: 'armamento' | 'defensa'): number;
+  /** Intenta comprar el siguiente nivel de `rama`. false si no hay créditos o ya está al máximo. */
+  comprarTecnologia(faccion: Faccion, rama: 'armamento' | 'defensa'): boolean;
+  /** Cruceros vivos de `faccion` con su habilidad activa (cooldown incluido). */
+  obtenerHabilidadesCrucero(faccion: Faccion): InfoHabilidadCruceroIA[];
+  /** Activa la habilidad del crucero `idNave`. false si no está lista o no existe. */
+  activarHabilidadCrucero(faccion: Faccion, idNave: number): boolean;
 }

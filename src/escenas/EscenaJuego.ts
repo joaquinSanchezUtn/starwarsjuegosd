@@ -1,23 +1,44 @@
 // Escena principal de partida: mundo, cámara, bases, minas, naves,
-// producción, economía, IA enemiga, selección/órdenes del jugador y HUD.
+// producción, economía (minas ricas/mejoras/chatarra), tecnología,
+// habilidades de crucero, IA enemiga, selección/órdenes del jugador y HUD.
 import Phaser from 'phaser';
-import type { Dificultad, Faccion, ObjetivoAtacable, TipoUnidad } from '../nucleo/tipos.ts';
-import { Nave } from '../entidades/Nave.ts';
+import type { Dificultad, Faccion, ModificadoresTecnologia, NivelesTecnologia, ObjetivoAtacable, TipoUnidad } from '../nucleo/tipos.ts';
+import { Nave, type OpcionesNave } from '../entidades/Nave.ts';
 import { Base } from '../entidades/Base.ts';
 import { Mina } from '../entidades/Mina.ts';
+import { Chatarra } from '../entidades/Chatarra.ts';
+import { Torpedo } from '../entidades/Torpedo.ts';
 import { GestorCamara } from '../sistemas/Camara.ts';
 import { GestorSeleccion, type ContextoSeleccion } from '../sistemas/Seleccion.ts';
-import { actualizarMinas, calcularIngresoTick, calcularIngresoPorSegundo, contarMinasControladas, creditosIniciales } from '../sistemas/Economia.ts';
+import {
+  actualizarMinas,
+  calcularIngresoTick,
+  calcularDesgloseIngreso,
+  contarMinasControladas,
+  creditosIniciales,
+  actualizarChatarra,
+} from '../sistemas/Economia.ts';
 import { intentarProducir, intentarSubirNivel } from '../sistemas/Produccion.ts';
+import {
+  crearNivelesTecnologiaIniciales,
+  calcularModificadores,
+  intentarComprarTecnologia,
+  costoProximoNivel,
+} from '../sistemas/Tecnologia.ts';
 import { ANCHO_MUNDO, ALTO_MUNDO, POSICION_BASE_COALICION, POSICION_BASE_ENJAMBRE, POSICIONES_MINAS } from '../datos/mapa.ts';
 import { BASE } from '../datos/balance.ts';
 import { COLOR_FONDO_MAPA } from '../datos/colores.ts';
+import { crearFondoParallax } from '../render/vfx/Parallax.ts';
 import { HUD, ALTURA_ZONA_HUD_PX } from '../ui/HUD.ts';
 import { AdaptadorJuego } from '../ia/AdaptadorJuego.ts';
 import { MaquinaEstadosIA } from '../ia/MaquinaEstadosIA.ts';
+import { reproducirAlertaBase, reproducirCaptura } from '../sonido/index.ts';
 
 const FACCION_JUGADOR: Faccion = 'coalicion';
 const FACCION_IA: Faccion = 'enjambre';
+const RADIO_ALERTA_BASE_JUGADOR = BASE.alcanceDefensa * 1.5;
+const RADIO_ALERTA_MINA_JUGADOR = 200;
+const INTERVALO_MIN_ALERTA_MINA_MS = 12000;
 
 interface DatosInicioJuego {
   dificultad: Dificultad;
@@ -31,8 +52,12 @@ export class EscenaJuego extends Phaser.Scene {
   private minas: Mina[] = [];
   private navesCoalicion: Nave[] = [];
   private navesEnjambre: Nave[] = [];
+  private chatarras: Chatarra[] = [];
+  private torpedos: Torpedo[] = [];
 
   private creditos: Record<Faccion, number> = { coalicion: 0, enjambre: 0 };
+  private tecnologia: Record<Faccion, NivelesTecnologia> = crearNivelesTecnologiaIniciales();
+  private modTecnologia!: Record<Faccion, ModificadoresTecnologia>;
 
   private camara!: GestorCamara;
   private seleccion!: GestorSeleccion;
@@ -40,6 +65,8 @@ export class EscenaJuego extends Phaser.Scene {
   private ia!: MaquinaEstadosIA;
 
   private juegoTerminado = false;
+  private cruceroEnemigoAnunciado = false;
+  private ultimaAlertaMinaMs: Map<number, number> = new Map();
 
   constructor() {
     super('Juego');
@@ -51,19 +78,29 @@ export class EscenaJuego extends Phaser.Scene {
     this.navesCoalicion = [];
     this.navesEnjambre = [];
     this.minas = [];
+    this.chatarras = [];
+    this.torpedos = [];
+    this.tecnologia = crearNivelesTecnologiaIniciales();
+    this.cruceroEnemigoAnunciado = false;
+    this.ultimaAlertaMinaMs = new Map();
   }
 
   create(): void {
     this.cameras.main.setBackgroundColor(COLOR_FONDO_MAPA);
-    this.dibujarFondoEstrellado();
+    crearFondoParallax(this, ANCHO_MUNDO, ALTO_MUNDO);
 
     this.baseCoalicion = new Base(this, POSICION_BASE_COALICION.x, POSICION_BASE_COALICION.y, 'coalicion');
     this.baseEnjambre = new Base(this, POSICION_BASE_ENJAMBRE.x, POSICION_BASE_ENJAMBRE.y, 'enjambre');
 
-    this.minas = POSICIONES_MINAS.map((p) => new Mina(this, p.x, p.y));
+    this.minas = POSICIONES_MINAS.map((p) => {
+      const mina = new Mina(this, p.x, p.y, p.rica ?? false);
+      mina.on('capturada', () => this.alCapturarMina());
+      return mina;
+    });
 
     this.creditos.coalicion = creditosIniciales('jugador', this.dificultad);
     this.creditos.enjambre = creditosIniciales('ia', this.dificultad);
+    this.recalcularModTecnologia();
 
     this.camara = new GestorCamara(this, ANCHO_MUNDO, ALTO_MUNDO);
     this.camara.centrarEn(POSICION_BASE_COALICION.x, POSICION_BASE_COALICION.y);
@@ -83,6 +120,9 @@ export class EscenaJuego extends Phaser.Scene {
     this.hud.onClickSubirNivel = () => this.intentarSubirNivelJugador();
     this.hud.onClickMinimapa = (x, y) => this.camara.centrarEn(x, y);
     this.hud.onVolverAlMenu = () => this.scene.start('Menu');
+    this.hud.onClickHabilidad = (idNave) => this.activarHabilidadCrucero(FACCION_JUGADOR, idNave);
+    this.hud.onClickMejorarMina = () => this.intentarMejorarMinaSeleccionada();
+    this.hud.onClickComprarTecnologia = (rama) => this.intentarComprarTecnologiaJugador(rama);
 
     this.ia = new MaquinaEstadosIA(new AdaptadorJuego(this), FACCION_IA, FACCION_JUGADOR);
   }
@@ -103,8 +143,17 @@ export class EscenaJuego extends Phaser.Scene {
     this.actualizarDefensaBase(this.baseCoalicion, objetivosEnjambre, dtMs);
     this.actualizarDefensaBase(this.baseEnjambre, objetivosCoalicion, dtMs);
 
+    this.torpedos = this.torpedos.filter((t) =>
+      t.actualizar(dtMs, t.faccion === 'coalicion' ? objetivosEnjambre : objetivosCoalicion),
+    );
+
     const todasLasNaves = [...this.navesCoalicion, ...this.navesEnjambre];
     actualizarMinas(this.minas, todasLasNaves, dtMs);
+
+    const gananciaChatarra = actualizarChatarra(this.chatarras, todasLasNaves, dtMs);
+    this.creditos.coalicion += gananciaChatarra.coalicion;
+    this.creditos.enjambre += gananciaChatarra.enjambre;
+    this.chatarras = this.chatarras.filter((c) => c.active);
 
     this.creditos.coalicion += calcularIngresoTick('coalicion', this.minas, dtSeg);
     this.creditos.enjambre += calcularIngresoTick('enjambre', this.minas, dtSeg);
@@ -118,13 +167,15 @@ export class EscenaJuego extends Phaser.Scene {
     this.navesEnjambre = this.navesEnjambre.filter((n) => n.active);
     this.seleccion.limpiarMuertas();
 
-    this.hud.actualizarEconomia(
-      this.creditos.coalicion,
-      calcularIngresoPorSegundo('coalicion', this.minas),
-      contarMinasControladas('coalicion', this.minas),
-    );
+    this.detectarAmenazasParaJugador();
+
+    const desglose = calcularDesgloseIngreso('coalicion', this.minas);
+    this.hud.actualizarEconomia(this.creditos.coalicion, desglose, contarMinasControladas('coalicion', this.minas));
     this.hud.actualizarProduccion(this.baseCoalicion, this.creditos.coalicion);
-    this.hud.actualizarMinimapa(this.minas, this.baseCoalicion, this.baseEnjambre, this.navesCoalicion, this.navesEnjambre, this.cameras.main);
+    this.hud.actualizarTecnologia(this.tecnologia.coalicion, this.creditos.coalicion);
+    this.hud.actualizarSeleccion(this.seleccion.seleccionActual);
+    this.hud.actualizarMinaSeleccionada(this.seleccion.minaSeleccionada, FACCION_JUGADOR, this.creditos.coalicion);
+    this.hud.actualizarMinimapa(this.minas, this.baseCoalicion, this.baseEnjambre, this.navesCoalicion, this.navesEnjambre, this.chatarras, this.cameras.main);
 
     this.comprobarFinDePartida();
   }
@@ -136,7 +187,7 @@ export class EscenaJuego extends Phaser.Scene {
   }
 
   obtenerIngresoPorSegundoActual(faccion: Faccion): number {
-    return calcularIngresoPorSegundo(faccion, this.minas);
+    return calcularDesgloseIngreso(faccion, this.minas).total;
   }
 
   obtenerBase(faccion: Faccion): Base {
@@ -167,6 +218,41 @@ export class EscenaJuego extends Phaser.Scene {
     return true;
   }
 
+  mejorarMinaPara(faccion: Faccion, idMina: number): boolean {
+    const mina = this.minas.find((m) => m.id === idMina);
+    if (!mina) return false;
+    const costo = mina.intentarMejorar(faccion, this.creditos[faccion]);
+    if (costo <= 0) return false;
+    this.creditos[faccion] -= costo;
+    return true;
+  }
+
+  obtenerNivelesTecnologiaPara(faccion: Faccion): NivelesTecnologia {
+    return this.tecnologia[faccion];
+  }
+
+  costoProximoNivelTecnologiaPara(faccion: Faccion, rama: 'armamento' | 'defensa'): number {
+    return costoProximoNivel(this.tecnologia[faccion], rama);
+  }
+
+  comprarTecnologiaPara(faccion: Faccion, rama: 'armamento' | 'defensa'): boolean {
+    const costo = intentarComprarTecnologia(this.tecnologia[faccion], rama, this.creditos[faccion]);
+    if (costo <= 0) return false;
+    this.creditos[faccion] -= costo;
+    this.recalcularModTecnologia();
+    return true;
+  }
+
+  activarHabilidadCrucero(faccion: Faccion, idNave: number): boolean {
+    const naves = this.obtenerNaves(faccion);
+    const nave = naves.find((n) => n.id === idNave && n.estaVivo() && n.tipo === 'crucero');
+    if (!nave) return false;
+    const enemigos: ObjetivoAtacable[] = this.obtenerNaves(faccion === 'coalicion' ? 'enjambre' : 'coalicion').filter((n) =>
+      n.estaVivo(),
+    );
+    return nave.activarHabilidad(enemigos, (f, x, y, vidaUtilMs) => this.crearCazaAliado(f, x, y, vidaUtilMs));
+  }
+
   ordenarMoverNaves(idsUnidades: number[], x: number, y: number): void {
     const idsSet = new Set(idsUnidades);
     for (const n of [...this.navesCoalicion, ...this.navesEnjambre]) {
@@ -194,6 +280,24 @@ export class EscenaJuego extends Phaser.Scene {
 
   // --- privado ---------------------------------------------------------
 
+  private recalcularModTecnologia(): void {
+    this.modTecnologia = {
+      coalicion: calcularModificadores(this.tecnologia.coalicion, 'coalicion'),
+      enjambre: calcularModificadores(this.tecnologia.enjambre, 'enjambre'),
+    };
+  }
+
+  private construirOpcionesNave(faccion: Faccion, extra: Partial<OpcionesNave> = {}): OpcionesNave {
+    return {
+      obtenerModTecnologia: () => this.modTecnologia[faccion],
+      onGenerarChatarra: (x, y, valor) => this.chatarras.push(new Chatarra(this, x, y, valor)),
+      onLanzarTorpedo: (x, y, objetivo, danio, tipoAtacante, faccionAtacante, radioDanioArea) =>
+        this.torpedos.push(new Torpedo(this, x, y, objetivo, danio, tipoAtacante, faccionAtacante, radioDanioArea)),
+      creadorCazaAliado: (f, x, y, vidaUtilMs) => this.crearCazaAliado(f, x, y, vidaUtilMs),
+      ...extra,
+    };
+  }
+
   private resolverObjetivo(idObjetivo: number, tipoObjetivo: 'unidad' | 'base' | 'mina'): ObjetivoAtacable | null {
     if (tipoObjetivo === 'base') {
       // Este método solo lo invoca la IA (vía AdaptadorJuego), y su único rival es el
@@ -214,6 +318,16 @@ export class EscenaJuego extends Phaser.Scene {
     this.subirNivelBasePara(FACCION_JUGADOR);
   }
 
+  private intentarMejorarMinaSeleccionada(): void {
+    const mina = this.seleccion.minaSeleccionada;
+    if (!mina) return;
+    this.mejorarMinaPara(FACCION_JUGADOR, mina.id);
+  }
+
+  private intentarComprarTecnologiaJugador(rama: 'armamento' | 'defensa'): void {
+    this.comprarTecnologiaPara(FACCION_JUGADOR, rama);
+  }
+
   private actualizarDefensaBase(base: Base, enemigos: ObjetivoAtacable[], dtMs: number): void {
     if (!base.estaVivo()) return;
     if (!base.intentarDispararDefensa(dtMs)) return;
@@ -231,38 +345,62 @@ export class EscenaJuego extends Phaser.Scene {
   }
 
   private actualizarProduccionBase(base: Base, faccion: Faccion, dtMs: number): void {
-    const listos = base.actualizarProduccion(dtMs);
-    for (const tipo of listos) this.spawnearNave(faccion, tipo);
-  }
-
-  private dibujarFondoEstrellado(): void {
-    const g = this.add.graphics();
-    g.fillStyle(0xffffff, 0.5);
-    for (let i = 0; i < 260; i++) {
-      const x = Phaser.Math.Between(0, ANCHO_MUNDO);
-      const y = Phaser.Math.Between(0, ALTO_MUNDO);
-      const r = Phaser.Math.FloatBetween(0.4, 1.4);
-      g.fillCircle(x, y, r);
+    const listos = base.actualizarProduccion(dtMs, this.modTecnologia[faccion].velocidadProduccionMult);
+    for (const item of listos) {
+      for (let i = 0; i < item.cantidad; i++) this.spawnearNave(faccion, item.tipo, i, item.cantidad);
     }
-    g.setDepth(-10);
   }
 
-  private crearCazaAliado(faccion: Faccion, x: number, y: number): Nave {
-    const nave = new Nave(this, x, y, 'cazaLigero', faccion);
+  private crearCazaAliado(faccion: Faccion, x: number, y: number, vidaUtilMs?: number): Nave {
+    const nave = new Nave(this, x, y, 'cazaLigero', faccion, this.construirOpcionesNave(faccion, { vidaUtilMs }));
     if (faccion === 'coalicion') this.navesCoalicion.push(nave);
     else this.navesEnjambre.push(nave);
     return nave;
   }
 
-  private spawnearNave(faccion: Faccion, tipo: TipoUnidad): void {
+  private spawnearNave(faccion: Faccion, tipo: TipoUnidad, indiceEnLote: number, totalLote: number): void {
     const base = this.obtenerBase(faccion);
-    const angulo = Math.random() * Math.PI * 2;
+    const angulo = (Math.PI * 2 * indiceEnLote) / Math.max(1, totalLote) + Math.random() * 0.4;
     const radio = 90 + Math.random() * 30;
     const x = base.x + Math.cos(angulo) * radio;
     const y = base.y + Math.sin(angulo) * radio;
-    const nave = new Nave(this, x, y, tipo, faccion, (f, nx, ny) => this.crearCazaAliado(f, nx, ny));
+    const nave = new Nave(this, x, y, tipo, faccion, this.construirOpcionesNave(faccion));
     if (faccion === 'coalicion') this.navesCoalicion.push(nave);
     else this.navesEnjambre.push(nave);
+  }
+
+  private alCapturarMina(): void {
+    reproducirCaptura();
+  }
+
+  private detectarAmenazasParaJugador(): void {
+    if (!this.baseCoalicion.estaVivo()) return;
+
+    const amenazaBase = this.navesEnjambre.some(
+      (n) => n.estaVivo() && Phaser.Math.Distance.Between(n.x, n.y, this.baseCoalicion.x, this.baseCoalicion.y) <= RADIO_ALERTA_BASE_JUGADOR,
+    );
+    if (amenazaBase) {
+      reproducirAlertaBase();
+      this.hud.anunciar('¡Base bajo ataque!');
+    }
+
+    for (const mina of this.minas) {
+      if (mina.destruida || mina.duenio !== FACCION_JUGADOR) continue;
+      const amenazada = this.navesEnjambre.some(
+        (n) => n.estaVivo() && Phaser.Math.Distance.Between(n.x, n.y, mina.x, mina.y) <= RADIO_ALERTA_MINA_JUGADOR,
+      );
+      if (!amenazada) continue;
+      const ultima = this.ultimaAlertaMinaMs.get(mina.id) ?? -Infinity;
+      const ahora = this.time.now;
+      if (ahora - ultima < INTERVALO_MIN_ALERTA_MINA_MS) continue;
+      this.ultimaAlertaMinaMs.set(mina.id, ahora);
+      this.hud.anunciar(`Mina del sector ${nombreSector(mina)} bajo ataque`);
+    }
+
+    if (!this.cruceroEnemigoAnunciado && this.navesEnjambre.some((n) => n.tipo === 'crucero' && n.estaVivo())) {
+      this.cruceroEnemigoAnunciado = true;
+      this.hud.anunciar('Crucero enemigo detectado');
+    }
   }
 
   private comprobarFinDePartida(): void {
@@ -274,4 +412,13 @@ export class EscenaJuego extends Phaser.Scene {
       this.hud.mostrarVictoria();
     }
   }
+}
+
+function nombreSector(mina: Mina): string {
+  const relX = mina.x / ANCHO_MUNDO;
+  const relY = mina.y / ALTO_MUNDO;
+  const horiz = relX < 0.4 ? 'oeste' : relX > 0.6 ? 'este' : '';
+  const vert = relY < 0.4 ? 'norte' : relY > 0.6 ? 'sur' : '';
+  const partes = [vert, horiz].filter(Boolean);
+  return partes.length > 0 ? partes.join('-') : 'central';
 }
