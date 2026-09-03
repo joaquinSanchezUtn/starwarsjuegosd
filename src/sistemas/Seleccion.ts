@@ -1,6 +1,7 @@
 // Selección y control del jugador: click simple, rectángulo de arrastre,
-// click derecho contextual (mover / atacar / capturar), y grupos de control
-// (Ctrl+número asigna, número selecciona).
+// click derecho contextual (mover / atacar / capturar), grupos de control
+// (Ctrl+número asigna, número selecciona) y punto de reunión de la base
+// (seleccionar la base propia + click derecho).
 import Phaser from 'phaser';
 import type { Faccion } from '../nucleo/tipos.ts';
 import type { Nave } from '../entidades/Nave.ts';
@@ -14,18 +15,37 @@ export interface ContextoSeleccion {
   obtenerNavesEnemigas(): Nave[];
   obtenerMinas(): Mina[];
   obtenerBaseEnemiga(): Base;
+  obtenerBasePropia(): Base;
   /** alto en px de la franja inferior reservada al HUD, donde no se debe seleccionar */
   alturaZonaHudPx: number;
+  /**
+   * True si ese punto de pantalla cae sobre cualquier widget del HUD (franja
+   * inferior, minimapa, botones de tecnología/mute). El minimapa y esos
+   * botones sobresalen por encima de la franja inferior, así que mirar solo
+   * `alturaZonaHudPx` dejaba que un arrastre iniciado sobre ellos abriera
+   * igual un rectángulo de selección por debajo.
+   */
+  puntoSobreUi(xPantalla: number, yPantalla: number): boolean;
+}
+
+/** Resumen de un grupo de control para dibujarlo en el HUD. */
+export interface ResumenGrupo {
+  numero: number;
+  cantidad: number;
+  /** true si la selección actual es exactamente este grupo */
+  activo: boolean;
 }
 
 const UMBRAL_ARRASTRE_PX = 6;
 const TOLERANCIA_CLICK_PX = 10;
+const RADIO_CLICK_BASE_PX = 90;
 
 export class GestorSeleccion {
   private escena: Phaser.Scene;
   private ctx: ContextoSeleccion;
   seleccionActual: Nave[] = [];
   minaSeleccionada: Mina | null = null;
+  baseSeleccionada: Base | null = null;
   private grupos: Map<number, Nave[]> = new Map();
 
   private arrastrando = false;
@@ -37,6 +57,8 @@ export class GestorSeleccion {
 
   onCambioSeleccion?: (naves: Nave[]) => void;
   onSeleccionMina?: (mina: Mina | null) => void;
+  onSeleccionBase?: (base: Base | null) => void;
+  onCambioPuntoReunion?: () => void;
 
   constructor(escena: Phaser.Scene, ctx: ContextoSeleccion) {
     this.escena = escena;
@@ -58,12 +80,8 @@ export class GestorSeleccion {
     }
   }
 
-  private enZonaHud(y: number): boolean {
-    return y > this.escena.scale.height - this.ctx.alturaZonaHudPx;
-  }
-
   private alPointerDown(pointer: Phaser.Input.Pointer): void {
-    if (this.enZonaHud(pointer.y)) return;
+    if (this.ctx.puntoSobreUi(pointer.x, pointer.y)) return;
     if (pointer.rightButtonDown()) {
       this.ejecutarOrdenContextual(pointer);
       return;
@@ -110,11 +128,20 @@ export class GestorSeleccion {
       const nave = this.buscarNaveCercana(mundo.x, mundo.y);
       if (nave) {
         this.setMinaSeleccionada(null);
+        this.setBaseSeleccionada(null);
         this.setSeleccion([nave]);
+        return;
+      }
+      const basePropia = this.ctx.obtenerBasePropia();
+      if (basePropia.estaVivo() && Phaser.Math.Distance.Between(mundo.x, mundo.y, basePropia.x, basePropia.y) <= RADIO_CLICK_BASE_PX) {
+        this.setSeleccion([]);
+        this.setMinaSeleccionada(null);
+        this.setBaseSeleccionada(basePropia);
         return;
       }
       const mina = this.buscarMinaPropiaCercana(mundo.x, mundo.y);
       this.setSeleccion([]);
+      this.setBaseSeleccionada(null);
       this.setMinaSeleccionada(mina);
       return;
     }
@@ -129,6 +156,7 @@ export class GestorSeleccion {
       .obtenerNavesJugador()
       .filter((n) => n.estaVivo() && n.x >= minX && n.x <= maxX && n.y >= minY && n.y <= maxY);
     this.setMinaSeleccionada(null);
+    this.setBaseSeleccionada(null);
     this.setSeleccion(seleccion);
   }
 
@@ -143,6 +171,19 @@ export class GestorSeleccion {
   setMinaSeleccionada(mina: Mina | null): void {
     this.minaSeleccionada = mina;
     this.onSeleccionMina?.(mina);
+  }
+
+  setBaseSeleccionada(base: Base | null): void {
+    this.baseSeleccionada = base;
+    this.onSeleccionBase?.(base);
+  }
+
+  /** Borra el punto de reunión de la base propia (botón del HUD). */
+  quitarPuntoReunion(): void {
+    const base = this.ctx.obtenerBasePropia();
+    if (!base.puntoReunion) return;
+    base.puntoReunion = null;
+    this.onCambioPuntoReunion?.();
   }
 
   private buscarNaveCercana(x: number, y: number): Nave | null {
@@ -161,9 +202,18 @@ export class GestorSeleccion {
   }
 
   private ejecutarOrdenContextual(pointer: Phaser.Input.Pointer): void {
-    if (this.seleccionActual.length === 0) return;
     const cam = this.escena.cameras.main;
     const mundo = cam.getWorldPoint(pointer.x, pointer.y);
+
+    // Con la base propia seleccionada (y sin naves seleccionadas), el click
+    // derecho fija el punto de reunión en vez de dar una orden de movimiento.
+    if (this.seleccionActual.length === 0 && this.baseSeleccionada) {
+      this.baseSeleccionada.puntoReunion = { x: mundo.x, y: mundo.y };
+      this.onCambioPuntoReunion?.();
+      return;
+    }
+
+    if (this.seleccionActual.length === 0) return;
 
     // ¿clickeó una nave enemiga?
     for (const enemiga of this.ctx.obtenerNavesEnemigas()) {
@@ -200,8 +250,32 @@ export class GestorSeleccion {
       this.grupos.set(n, [...this.seleccionActual]);
     } else {
       const grupo = (this.grupos.get(n) ?? []).filter((nave) => nave.estaVivo());
-      if (grupo.length > 0) this.setSeleccion(grupo);
+      if (grupo.length === 0) return;
+      // Seleccionar naves tiene que soltar la mina/base que estuviera
+      // seleccionada, igual que hace el click izquierdo: si no, el panel
+      // contextual sigue mostrando la mina o el punto de reunión mientras el
+      // jugador ya está mandando un grupo de naves.
+      this.setMinaSeleccionada(null);
+      this.setBaseSeleccionada(null);
+      this.setSeleccion(grupo);
     }
+  }
+
+  /** Grupos no vacíos, para que el HUD los liste. */
+  resumenGrupos(): ResumenGrupo[] {
+    const resumen: ResumenGrupo[] = [];
+    for (let n = 1; n <= 9; n++) {
+      const grupo = this.grupos.get(n);
+      if (!grupo || grupo.length === 0) continue;
+      resumen.push({ numero: n, cantidad: grupo.length, activo: this.esSeleccionActual(grupo) });
+    }
+    return resumen;
+  }
+
+  private esSeleccionActual(grupo: Nave[]): boolean {
+    if (grupo.length !== this.seleccionActual.length || grupo.length === 0) return false;
+    const idsGrupo = new Set(grupo.map((n) => n.id));
+    return this.seleccionActual.every((n) => idsGrupo.has(n.id));
   }
 
   setSeleccion(naves: Nave[]): void {

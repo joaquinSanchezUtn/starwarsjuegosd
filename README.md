@@ -30,9 +30,11 @@ npx tsx herramientas/simulador-balance.ts   # simulador headless de combate, par
 | Selección múltiple | Arrastrar un rectángulo con click izquierdo |
 | Mover / atacar / capturar | Click derecho sobre el destino (suelo vacío = mover, nave o base enemiga = atacar, cualquier mina = capturar/recapturar) |
 | Asignar grupo de control | Ctrl o Shift + número (1-9) con naves seleccionadas |
-| Seleccionar grupo de control | Número (1-9) |
+| Seleccionar grupo de control | Número (1-9). Los grupos asignados se listan como chips "N:cantidad" encima del HUD, con el activo resaltado |
+| Seleccionar tu base | Click izquierdo sobre la base propia (muestra el panel de punto de reunión) |
+| Fijar punto de reunión | Con la base propia seleccionada, click derecho en el mapa. Las naves nuevas salen hacia ahí en vez de quedarse junto a la base |
 | Mover la cámara | WASD / flechas, o mouse contra el borde de la pantalla |
-| Recentrar cámara | Click en el minimapa (abajo a la derecha) |
+| Recentrar cámara | Click en el minimapa (abajo a la derecha), o mantener presionado y arrastrar para paneo continuo |
 | Producir nave | Click en el botón correspondiente del panel inferior (se agranda/atenúa según si podés pagarla) |
 | Subir nivel de base | Botón "Subir a nivel N" abajo a la izquierda |
 | Mejorar una mina propia | Seleccionarla y click en "Mejorar mina" (panel contextual, abajo a la izquierda) |
@@ -89,7 +91,7 @@ La Coalición y el Enjambre **ya no son espejos**: los stats de cada tier son di
 - **Minas**: arrancan neutrales, se capturan manteniendo una sola nave cerca durante unos segundos (la mitad si es una nave de captura). Una mina controlada puede ser destruida a tiros por el rival —vuelve a quedar neutral automáticamente después de un rato— o recapturada directamente parando una nave al lado.
 - **Minas ricas**: las del centro del mapa (más grandes, con un halo dorado) rinden el doble de ingreso — son las más disputadas.
 - **Mejora de mina**: pagando créditos, una mina propia puede mejorarse una vez (+50% ingreso, +50% vida máxima). Si la destruyen, la mejora se pierde — invertir en una mina expuesta es una apuesta.
-- **Tecnología**: árbol de 2 ramas × 2 niveles por bando, comprado desde el HUD con créditos. Armamento sube el daño de toda la flota; Casco/Escudos sube la vida máxima de las naves nuevas y, según el bando, la velocidad de regeneración de escudo (Coalición) o de producción (Enjambre).
+- **Tecnología**: árbol de 2 ramas × 2 niveles por bando, comprado desde el HUD con créditos. Armamento sube el daño de toda la flota; Casco/Escudos sube la vida máxima de toda la flota —incluida la que ya está en el mapa, conservando la fracción de vida de cada nave— y, según el bando, la velocidad de regeneración de escudo (Coalición) o de producción (Enjambre).
 - **Chatarra**: las naves grandes (fragata en adelante) dejan restos recolectables al morir. Cualquier nave —de cualquier bando, la que llegue primero— que pase cerca se los queda como créditos. Se desvanece sola si nadie la recoge.
 
 ## Sonido

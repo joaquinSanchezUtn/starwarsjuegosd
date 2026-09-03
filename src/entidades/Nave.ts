@@ -526,6 +526,32 @@ export class Nave extends Phaser.GameObjects.Container implements ObjetivoAtacab
     this.destroy();
   }
 
+  /**
+   * Reaplica el multiplicador de vida de la tecnología de Casco/Escudos a una
+   * nave ya construida, **manteniendo la fracción de vida y escudo actual**.
+   *
+   * Escalar la fracción en vez de sumar la diferencia en crudo es lo que
+   * resuelve la ambigüedad que había dejado esta mejora fuera del alcance
+   * retroactivo: una nave al 30% sigue al 30% de un máximo más alto, así que
+   * la barra no salta ni cura de golpe a la flota herida, pero toda la flota
+   * gana el aguante extra que el jugador pagó.
+   */
+  reaplicarBonoVida(): void {
+    const mods = this.opciones.obtenerModTecnologia?.() ?? {
+      danioMult: 1,
+      vidaMult: 1,
+      regenEscudoMult: 1,
+      velocidadProduccionMult: 1,
+    };
+    const fracVida = this.vidaMax > 0 ? this.vida / this.vidaMax : 0;
+    const fracEscudo = this.escudoMax > 0 ? this.escudo / this.escudoMax : 0;
+    this.vidaMax = this.datos.vidaMax * mods.vidaMult;
+    this.vida = this.vidaMax * fracVida;
+    this.escudoMax = (this.datos.escudoMax ?? 0) * mods.vidaMult;
+    this.escudo = this.escudoMax * fracEscudo;
+    this.actualizarBarraVida();
+  }
+
   private redibujarSeleccion(): void {
     this.anilloSeleccion.clear();
     if (!this.seleccionada) return;

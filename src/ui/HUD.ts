@@ -8,6 +8,7 @@ import type { Mina } from '../entidades/Mina.ts';
 import type { Nave } from '../entidades/Nave.ts';
 import type { Chatarra } from '../entidades/Chatarra.ts';
 import type { DesgloseIngreso } from '../sistemas/Economia.ts';
+import type { ResumenGrupo } from '../sistemas/Seleccion.ts';
 import { UNIDADES, BASE, MEJORA_MINA, CRUCERO_ESPECIAL, tiposDisponiblesParaFaccion } from '../datos/balance.ts';
 import { costoProximoNivel } from '../sistemas/Tecnologia.ts';
 import { PALETA, COLOR_MINA_NEUTRAL } from '../datos/colores.ts';
@@ -37,6 +38,7 @@ export class HUD {
   onClickHabilidad?: (idNave: number) => void;
   onClickMejorarMina?: () => void;
   onClickComprarTecnologia?: (rama: 'armamento' | 'defensa') => void;
+  onClickQuitarPuntoReunion?: () => void;
 
   private escena: Phaser.Scene;
   private faccionJugador: Faccion;
@@ -55,7 +57,13 @@ export class HUD {
   private botonHabilidad: Phaser.GameObjects.Rectangle;
   private textoBotonHabilidad: Phaser.GameObjects.Graphics;
   private textoNombreHabilidad: Phaser.GameObjects.Text;
+  private botonReunion: Phaser.GameObjects.Rectangle;
+  private textoBotonReunion: Phaser.GameObjects.Text;
   private idCruceroSeleccionado: number | null = null;
+
+  // Indicador de grupos de control (fila de chips sobre la franja del HUD).
+  private gruposGraficos: Phaser.GameObjects.Graphics;
+  private gruposTextos: Phaser.GameObjects.Text[] = [];
 
   // Tecnología.
   private botonesTecnologia: Record<'armamento' | 'defensa', { rect: Phaser.GameObjects.Rectangle; texto: Phaser.GameObjects.Text }>;
@@ -72,6 +80,7 @@ export class HUD {
   private minimapaGraficos: Phaser.GameObjects.Graphics;
   private minimapaOrigenX: number;
   private minimapaOrigenY: number;
+  private arrastrandoMinimapa = false;
   private overlayFin: Phaser.GameObjects.Container | null = null;
 
   constructor(escena: Phaser.Scene, faccionJugador: Faccion) {
@@ -162,6 +171,37 @@ export class HUD {
     this.textoBotonHabilidad.setScrollFactor(0);
     this.textoBotonHabilidad.setDepth(910);
 
+    // Panel contextual: punto de reunión (con la base propia seleccionada).
+    this.botonReunion = escena.add.rectangle(200, h - 40, 250, 30, 0x5ad8ff, 0.85);
+    this.botonReunion.setOrigin(0, 0.5);
+    this.botonReunion.setScrollFactor(0);
+    this.botonReunion.setDepth(910);
+    this.botonReunion.setInteractive({ useHandCursor: true });
+    this.botonReunion.on('pointerdown', () => this.onClickQuitarPuntoReunion?.());
+    this.botonReunion.setVisible(false);
+    this.textoBotonReunion = escena.add.text(206, h - 40, '', {
+      fontFamily: 'monospace',
+      fontSize: '11px',
+      color: '#04212e',
+    });
+    this.textoBotonReunion.setOrigin(0, 0.5);
+    this.textoBotonReunion.setScrollFactor(0);
+    this.textoBotonReunion.setDepth(911);
+    this.textoBotonReunion.setVisible(false);
+
+    // Chips de grupos de control, en una fila justo encima de la franja del HUD.
+    this.gruposGraficos = escena.add.graphics();
+    this.gruposGraficos.setScrollFactor(0);
+    this.gruposGraficos.setDepth(910);
+    for (let i = 0; i < 9; i++) {
+      const t = escena.add.text(0, 0, '', { fontFamily: 'monospace', fontSize: '10px', color: '#e8ecf0' });
+      t.setOrigin(0.5, 0.5);
+      t.setScrollFactor(0);
+      t.setDepth(911);
+      t.setVisible(false);
+      this.gruposTextos.push(t);
+    }
+
     // Panel de producción (centro)
     const anchoBoton = 76;
     const separacion = 8;
@@ -246,14 +286,44 @@ export class HUD {
     this.minimapaFondo.setStrokeStyle(1, 0x3a3d44, 1);
     this.minimapaFondo.setInteractive({ useHandCursor: true });
     this.minimapaFondo.on('pointerdown', (p: Phaser.Input.Pointer) => {
-      const relX = (p.x - this.minimapaOrigenX) / ANCHO_MINIMAPA;
-      const relY = (p.y - this.minimapaOrigenY) / ALTO_MINIMAPA;
-      this.onClickMinimapa?.(relX * ANCHO_MUNDO, relY * ALTO_MUNDO);
+      this.arrastrandoMinimapa = true;
+      this.recentrarDesdeMinimapa(p.x, p.y);
+    });
+    // El paneo continuo se escucha a nivel de escena, no del rectángulo del
+    // minimapa: así el arrastre sigue funcionando aunque el puntero se salga
+    // de sus bordes, en vez de cortarse de golpe.
+    escena.input.on('pointermove', (p: Phaser.Input.Pointer) => {
+      if (!this.arrastrandoMinimapa) return;
+      if (!p.isDown) {
+        this.arrastrandoMinimapa = false;
+        return;
+      }
+      this.recentrarDesdeMinimapa(p.x, p.y);
+    });
+    escena.input.on('pointerup', () => {
+      this.arrastrandoMinimapa = false;
     });
 
     this.minimapaGraficos = escena.add.graphics();
     this.minimapaGraficos.setScrollFactor(0);
     this.minimapaGraficos.setDepth(911);
+  }
+
+  private recentrarDesdeMinimapa(xPantalla: number, yPantalla: number): void {
+    const relX = Phaser.Math.Clamp((xPantalla - this.minimapaOrigenX) / ANCHO_MINIMAPA, 0, 1);
+    const relY = Phaser.Math.Clamp((yPantalla - this.minimapaOrigenY) / ALTO_MINIMAPA, 0, 1);
+    this.onClickMinimapa?.(relX * ANCHO_MUNDO, relY * ALTO_MUNDO);
+  }
+
+  /**
+   * True si el punto cae sobre algún widget del HUD. Lo usa la selección para
+   * no abrir un rectángulo de arrastre por debajo del minimapa o de los
+   * botones de tecnología/mute, que sobresalen de la franja inferior.
+   */
+  contieneUI(xPantalla: number, yPantalla: number): boolean {
+    if (yPantalla > this.escena.scale.height - ALTURA_ZONA_HUD_PX) return true;
+    const rects = [this.minimapaFondo, this.botonMute, this.botonesTecnologia.armamento.rect, this.botonesTecnologia.defensa.rect];
+    return rects.some((r) => r.getBounds().contains(xPantalla, yPantalla));
   }
 
   actualizarEconomia(creditos: number, desglose: DesgloseIngreso, minasControladas: number): void {
@@ -317,22 +387,41 @@ export class HUD {
     }
   }
 
-  /** Muestra/oculta el botón de habilidad si hay un crucero propio entre las naves seleccionadas. */
-  actualizarSeleccion(naves: Nave[]): void {
-    const crucero = naves.find((n) => n.tipo === 'crucero' && n.faccion === this.faccionJugador);
+  /**
+   * Único punto que decide qué muestra el panel contextual: habilidad de
+   * crucero, mejora de mina o punto de reunión. Antes eran dos métodos que se
+   * ocultaban mutuamente a mano, lo que no escalaba a un tercer estado.
+   */
+  actualizarPanelContextual(naves: Nave[], mina: Mina | null, base: Base | null, creditos: number): void {
+    const crucero = naves.find((n) => n.tipo === 'crucero' && n.faccion === this.faccionJugador) ?? null;
+    this.idCruceroSeleccionado = crucero?.id ?? null;
     this.textoBotonHabilidad.clear();
-    if (!crucero) {
-      this.idCruceroSeleccionado = null;
-      this.botonHabilidad.setVisible(false);
-      this.textoNombreHabilidad.setVisible(false);
-      return;
-    }
-    this.idCruceroSeleccionado = crucero.id;
-    this.botonHabilidad.setVisible(true);
-    this.textoNombreHabilidad.setVisible(true);
-    this.botonMejoraMina.setVisible(false);
-    this.textoBotonMejoraMina.setVisible(false);
 
+    const modo = crucero ? 'habilidad' : mina ? 'mina' : base ? 'reunion' : 'ninguno';
+
+    this.botonHabilidad.setVisible(modo === 'habilidad');
+    this.textoNombreHabilidad.setVisible(modo === 'habilidad');
+    this.botonMejoraMina.setVisible(modo === 'mina');
+    this.textoBotonMejoraMina.setVisible(modo === 'mina');
+    this.botonReunion.setVisible(modo === 'reunion');
+    this.textoBotonReunion.setVisible(modo === 'reunion');
+
+    if (modo === 'habilidad' && crucero) this.dibujarPanelHabilidad(crucero);
+    else if (modo === 'mina' && mina) this.dibujarPanelMina(mina, creditos);
+    else if (modo === 'reunion' && base) this.dibujarPanelReunion(base);
+  }
+
+  private dibujarPanelReunion(base: Base): void {
+    if (base.puntoReunion) {
+      this.textoBotonReunion.setText('Quitar punto de reunión');
+      this.botonReunion.setFillStyle(0x5ad8ff, 0.9);
+    } else {
+      this.textoBotonReunion.setText('Click derecho: fijar punto de reunión');
+      this.botonReunion.setFillStyle(0x5ad8ff, 0.35);
+    }
+  }
+
+  private dibujarPanelHabilidad(crucero: Nave): void {
     const especial = CRUCERO_ESPECIAL[this.faccionJugador];
     const lista = crucero.puedeUsarHabilidad();
     const progreso = crucero.progresoHabilidad01();
@@ -346,16 +435,8 @@ export class HUD {
     this.textoBotonHabilidad.fillRect(b.x, b.y + b.height - 4, b.width * progreso, 4);
   }
 
-  /** Muestra/oculta el botón de mejora de mina si hay una mina propia sin mejorar seleccionada. */
-  actualizarMinaSeleccionada(mina: Mina | null, faccionJugador: Faccion, creditos: number): void {
-    if (!mina || this.idCruceroSeleccionado !== null) {
-      this.botonMejoraMina.setVisible(false);
-      this.textoBotonMejoraMina.setVisible(false);
-      return;
-    }
-    const puedeMejorar = mina.puedeMejorar(faccionJugador);
-    this.botonMejoraMina.setVisible(true);
-    this.textoBotonMejoraMina.setVisible(true);
+  private dibujarPanelMina(mina: Mina, creditos: number): void {
+    const puedeMejorar = mina.puedeMejorar(this.faccionJugador);
     if (!puedeMejorar) {
       this.textoBotonMejoraMina.setText(mina.nivelMejora === 1 ? 'Mina ya mejorada' : 'Mina no disponible');
       this.botonMejoraMina.setFillStyle(0x555555, 0.6);
@@ -365,6 +446,34 @@ export class HUD {
     const puedePagar = creditos >= costo;
     this.textoBotonMejoraMina.setText(`Mejorar mina (+${Math.round(MEJORA_MINA.bonoIngresoFraccion * 100)}%, ${costo}cr)`);
     this.botonMejoraMina.setFillStyle(0xffd76a, puedePagar ? 0.9 : 0.35);
+  }
+
+  /** Fila de chips "N:cantidad" con los grupos de control asignados. */
+  actualizarGrupos(grupos: ResumenGrupo[]): void {
+    this.gruposGraficos.clear();
+    for (const t of this.gruposTextos) t.setVisible(false);
+    if (grupos.length === 0) return;
+
+    const anchoChip = 40;
+    const altoChip = 18;
+    const separacion = 5;
+    const total = grupos.length * anchoChip + (grupos.length - 1) * separacion;
+    const inicioX = this.escena.scale.width / 2 - total / 2;
+    const y = this.escena.scale.height - ALTURA_ZONA_HUD_PX - altoChip - 6;
+
+    grupos.forEach((grupo, i) => {
+      const x = inicioX + i * (anchoChip + separacion);
+      this.gruposGraficos.fillStyle(0x05070d, grupo.activo ? 0.95 : 0.7);
+      this.gruposGraficos.fillRect(x, y, anchoChip, altoChip);
+      this.gruposGraficos.lineStyle(1, grupo.activo ? PALETA[this.faccionJugador].seleccion : 0x555b66, 0.9);
+      this.gruposGraficos.strokeRect(x, y, anchoChip, altoChip);
+
+      const texto = this.gruposTextos[i];
+      texto.setText(`${grupo.numero}:${grupo.cantidad}`);
+      texto.setColor(grupo.activo ? '#ffffff' : '#9aa3ad');
+      texto.setPosition(x + anchoChip / 2, y + altoChip / 2);
+      texto.setVisible(true);
+    });
   }
 
   private actualizarBotonMute(): void {

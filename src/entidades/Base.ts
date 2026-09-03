@@ -21,6 +21,11 @@ export class Base extends Phaser.GameObjects.Container implements ObjetivoAtacab
   private tiempoRestanteSubidaMs = 0;
 
   colaProduccion: ItemColaProduccion[] = [];
+  /**
+   * Destino al que se dirigen las naves recién producidas. Sin fijar, quedan
+   * junto a la base esperando una orden manual.
+   */
+  puntoReunion: { x: number; y: number } | null = null;
   private cronometroDefensaMs = 0;
 
   private barraVida: Phaser.GameObjects.Graphics;

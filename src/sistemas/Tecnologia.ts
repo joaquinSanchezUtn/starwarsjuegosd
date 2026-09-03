@@ -1,8 +1,10 @@
 // Árbol tecnológico de base: 2 ramas (armamento / defensa) × 2 niveles cada
-// una, por facción, comprado con créditos. El daño se aplica en vivo (afecta
-// a toda la flota ya construida); la vida y la velocidad de regeneración de
-// escudo / producción se aplican a través de `ModificadoresTecnologia`, leído
-// por Nave.ts y Base.ts en el momento en que corresponde.
+// una, por facción, comprado con créditos. El daño se aplica en vivo (se lee
+// al disparar, así que afecta a toda la flota ya construida). La vida máxima
+// se fija al construir cada nave, así que al comprar la rama de defensa
+// `EscenaJuego` la reaplica a la flota viva vía `Nave.reaplicarBonoVida()`,
+// que conserva la fracción de vida actual. La regeneración de escudo y la
+// velocidad de producción se leen en vivo desde `ModificadoresTecnologia`.
 import type { Faccion, ModificadoresTecnologia, NivelesTecnologia } from '../nucleo/tipos.ts';
 import {
   COSTO_TECNOLOGIA,

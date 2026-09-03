@@ -7,7 +7,7 @@ import { Nave, type OpcionesNave } from '../entidades/Nave.ts';
 import { Base } from '../entidades/Base.ts';
 import { Mina } from '../entidades/Mina.ts';
 import { Chatarra } from '../entidades/Chatarra.ts';
-import { Torpedo } from '../entidades/Torpedo.ts';
+import { lanzarTorpedo, type Torpedo } from '../entidades/Torpedo.ts';
 import { GestorCamara } from '../sistemas/Camara.ts';
 import { GestorSeleccion, type ContextoSeleccion } from '../sistemas/Seleccion.ts';
 import {
@@ -27,7 +27,7 @@ import {
 } from '../sistemas/Tecnologia.ts';
 import { ANCHO_MUNDO, ALTO_MUNDO, POSICION_BASE_COALICION, POSICION_BASE_ENJAMBRE, POSICIONES_MINAS } from '../datos/mapa.ts';
 import { BASE } from '../datos/balance.ts';
-import { COLOR_FONDO_MAPA } from '../datos/colores.ts';
+import { COLOR_FONDO_MAPA, PALETA } from '../datos/colores.ts';
 import { crearFondoParallax } from '../render/vfx/Parallax.ts';
 import { HUD, ALTURA_ZONA_HUD_PX } from '../ui/HUD.ts';
 import { AdaptadorJuego } from '../ia/AdaptadorJuego.ts';
@@ -62,6 +62,7 @@ export class EscenaJuego extends Phaser.Scene {
   private camara!: GestorCamara;
   private seleccion!: GestorSeleccion;
   private hud!: HUD;
+  private marcadorReunion!: Phaser.GameObjects.Graphics;
   private ia!: MaquinaEstadosIA;
 
   private juegoTerminado = false;
@@ -111,9 +112,15 @@ export class EscenaJuego extends Phaser.Scene {
       obtenerNavesEnemigas: () => this.navesEnjambre,
       obtenerMinas: () => this.minas,
       obtenerBaseEnemiga: () => this.baseEnjambre,
+      obtenerBasePropia: () => this.baseCoalicion,
       alturaZonaHudPx: ALTURA_ZONA_HUD_PX,
+      puntoSobreUi: (x, y) => this.hud.contieneUI(x, y),
     };
     this.seleccion = new GestorSeleccion(this, contextoSeleccion);
+    this.seleccion.onCambioPuntoReunion = () => this.redibujarMarcadorReunion();
+
+    this.marcadorReunion = this.add.graphics();
+    this.marcadorReunion.setDepth(4);
 
     this.hud = new HUD(this, FACCION_JUGADOR);
     this.hud.onClickProducir = (tipo) => this.intentarProducirJugador(tipo);
@@ -123,6 +130,7 @@ export class EscenaJuego extends Phaser.Scene {
     this.hud.onClickHabilidad = (idNave) => this.activarHabilidadCrucero(FACCION_JUGADOR, idNave);
     this.hud.onClickMejorarMina = () => this.intentarMejorarMinaSeleccionada();
     this.hud.onClickComprarTecnologia = (rama) => this.intentarComprarTecnologiaJugador(rama);
+    this.hud.onClickQuitarPuntoReunion = () => this.seleccion.quitarPuntoReunion();
 
     this.ia = new MaquinaEstadosIA(new AdaptadorJuego(this), FACCION_IA, FACCION_JUGADOR);
   }
@@ -173,8 +181,13 @@ export class EscenaJuego extends Phaser.Scene {
     this.hud.actualizarEconomia(this.creditos.coalicion, desglose, contarMinasControladas('coalicion', this.minas));
     this.hud.actualizarProduccion(this.baseCoalicion, this.creditos.coalicion);
     this.hud.actualizarTecnologia(this.tecnologia.coalicion, this.creditos.coalicion);
-    this.hud.actualizarSeleccion(this.seleccion.seleccionActual);
-    this.hud.actualizarMinaSeleccionada(this.seleccion.minaSeleccionada, FACCION_JUGADOR, this.creditos.coalicion);
+    this.hud.actualizarPanelContextual(
+      this.seleccion.seleccionActual,
+      this.seleccion.minaSeleccionada,
+      this.seleccion.baseSeleccionada,
+      this.creditos.coalicion,
+    );
+    this.hud.actualizarGrupos(this.seleccion.resumenGrupos());
     this.hud.actualizarMinimapa(this.minas, this.baseCoalicion, this.baseEnjambre, this.navesCoalicion, this.navesEnjambre, this.chatarras, this.cameras.main);
 
     this.comprobarFinDePartida();
@@ -240,6 +253,14 @@ export class EscenaJuego extends Phaser.Scene {
     if (costo <= 0) return false;
     this.creditos[faccion] -= costo;
     this.recalcularModTecnologia();
+    // El bono de daño ya se lee en vivo al disparar, pero la vida máxima se
+    // fija al construir la nave: hay que reaplicarla a mano a la flota que ya
+    // está en el mapa.
+    if (rama === 'defensa') {
+      for (const n of this.obtenerNaves(faccion)) {
+        if (n.estaVivo()) n.reaplicarBonoVida();
+      }
+    }
     return true;
   }
 
@@ -292,7 +313,7 @@ export class EscenaJuego extends Phaser.Scene {
       obtenerModTecnologia: () => this.modTecnologia[faccion],
       onGenerarChatarra: (x, y, valor) => this.chatarras.push(new Chatarra(this, x, y, valor)),
       onLanzarTorpedo: (x, y, objetivo, danio, tipoAtacante, faccionAtacante, radioDanioArea) =>
-        this.torpedos.push(new Torpedo(this, x, y, objetivo, danio, tipoAtacante, faccionAtacante, radioDanioArea)),
+        this.torpedos.push(lanzarTorpedo(this, x, y, objetivo, danio, tipoAtacante, faccionAtacante, radioDanioArea)),
       creadorCazaAliado: (f, x, y, vidaUtilMs) => this.crearCazaAliado(f, x, y, vidaUtilMs),
       ...extra,
     };
@@ -365,8 +386,23 @@ export class EscenaJuego extends Phaser.Scene {
     const x = base.x + Math.cos(angulo) * radio;
     const y = base.y + Math.sin(angulo) * radio;
     const nave = new Nave(this, x, y, tipo, faccion, this.construirOpcionesNave(faccion));
+    if (base.puntoReunion) nave.moverA(base.puntoReunion.x, base.puntoReunion.y);
     if (faccion === 'coalicion') this.navesCoalicion.push(nave);
     else this.navesEnjambre.push(nave);
+  }
+
+  private redibujarMarcadorReunion(): void {
+    const g = this.marcadorReunion;
+    g.clear();
+    const punto = this.baseCoalicion.puntoReunion;
+    if (!punto) return;
+    const color = PALETA[FACCION_JUGADOR].seleccion;
+    g.lineStyle(2, color, 0.9);
+    g.strokeCircle(punto.x, punto.y, 16);
+    g.lineStyle(1, color, 0.5);
+    g.strokeCircle(punto.x, punto.y, 26);
+    g.lineBetween(punto.x - 9, punto.y, punto.x + 9, punto.y);
+    g.lineBetween(punto.x, punto.y - 9, punto.x, punto.y + 9);
   }
 
   private alCapturarMina(): void {

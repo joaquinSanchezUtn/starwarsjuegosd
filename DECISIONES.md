@@ -2,7 +2,7 @@
 
 Este documento registra las decisiones tomadas de forma autónoma durante el desarrollo de **Guerra de Fábricas**, con la justificación de cada una. El proyecto se construyó de punta a punta con un orquestador que delegó en subagentes en paralelo (arte de naves, IA enemiga) y resolvió el resto (arquitectura, sistemas de juego, UI, balance, integración y testing) de forma directa.
 
-> Las secciones de abajo hasta "Prompt 2" documentan la primera entrega (mapa, minas, base con niveles, roster de 11 naves simétricas, IA, 3 dificultades). La sección **"Prompt 2 — el juego se vuelve vivo"** al final del documento registra la segunda vuelta: gráficos semi-3D, bandos asimétricos, habilidades, sonido y economía ampliada, construida iterando sobre esta base sin rehacerla.
+> Las secciones de abajo hasta "Prompt 2" documentan la primera entrega (mapa, minas, base con niveles, roster de 11 naves simétricas, IA, 3 dificultades). La sección **"Prompt 2 — el juego se vuelve vivo"** registra la segunda vuelta: gráficos semi-3D, bandos asimétricos, habilidades, sonido y economía ampliada, construida iterando sobre esta base sin rehacerla. La sección **"Prompt 3 — comodidad de control y deuda técnica"** al final registra la tercera: punto de reunión, indicador de grupos, arrastre del minimapa, bono de vida retroactivo, pooling de torpedos y code-splitting.
 
 ## Ambientación y nombres
 
@@ -188,3 +188,57 @@ Tampoco esta vez hubo extensión de Chrome conectada. Verificación con:
 ## Bugs de la vuelta anterior resueltos de paso
 
 - **Selección por arrastre sobre la franja del HUD** (prioridad baja en `TAREAS.md`): el rectángulo de selección dibujado ahora se recorta contra el borde superior del HUD (`Seleccion.alPointerMove`); la selección en coordenadas de mundo ya era correcta antes, esto era puramente visual.
+
+---
+
+# Prompt 3 — comodidad de control y deuda técnica
+
+Tercera vuelta, dedicada a saldar la lista de `TAREAS.md` en vez de agregar mecánicas nuevas: las tres ausencias de comodidad de control que quedaban en prioridad media, más la deuda técnica de prioridad baja (pooling de torpedos, code-splitting) y la única decisión de diseño que había quedado marcada como discutible (el bono de vida no retroactivo).
+
+## Punto de reunión (rally point)
+
+- Se resolvió **sin agregar un modo ni una tecla dedicada**: la base propia pasa a ser seleccionable con click izquierdo (antes solo se podían seleccionar naves y minas propias), y con la base seleccionada el click derecho fija el punto en vez de dar una orden de movimiento. Es el mismo gesto que ya usa el jugador para todo lo demás, así que no hay nada nuevo que aprender.
+- El punto vive en `Base.puntoReunion`, no en la escena: es un atributo de la base que lo usa, y así queda naturalmente incluido si alguna vez se implementa el guardado de partida. `EscenaJuego.spawnearNave` lo lee y le da la orden de movimiento a la nave recién creada.
+- Solo lo usa el jugador. La IA no lo necesita porque ya dirige cada unidad que produce a través de su máquina de estados, así que darle un punto de reunión sería una capa de indirección sin efecto.
+
+## Panel contextual: refactor antes de agregar el tercer estado
+
+El panel de abajo a la izquierda tenía dos estados mutuamente excluyentes (mejora de mina y habilidad de crucero) resueltos con dos métodos que se ocultaban el uno al otro a mano, y cada uno consultaba el estado del otro para decidir. Agregar el punto de reunión como tercer estado con ese esquema habría requerido tres chequeos cruzados. Se unificó en un solo `HUD.actualizarPanelContextual`, que calcula el modo activo una vez y aplica visibilidad de forma declarativa. No cambia el comportamiento visible; era condición para que el tercer estado no fuera una fuente de bugs de prioridad de UI.
+
+## Indicador de grupos de control
+
+- `GestorSeleccion.resumenGrupos()` expone los grupos no vacíos con su cantidad y un flag de "activo", y el HUD los dibuja como una fila de chips centrada justo encima de la franja inferior.
+- "Activo" se calcula como **igualdad exacta de conjuntos** entre el grupo y la selección actual, no como intersección: si el jugador selecciona a mano tres naves que casualmente pertenecen al grupo 2, el chip no se resalta, porque esa selección no *es* el grupo 2. Resaltar por intersección habría dado falsos positivos constantes en cuanto los grupos se solapan.
+- Los chips se dibujan con un `Graphics` compartido para los recuadros y nueve `Text` preasignados que se muestran/ocultan, en vez de crear y destruir objetos cada frame — el HUD se redibuja en cada tick de `update`.
+
+## Arrastre del minimapa
+
+- El paneo continuo se escucha a **nivel de escena**, no en el rectángulo del minimapa. Con un listener en el propio rectángulo, el arrastre se cortaba en seco al salirse de sus bordes, que es justo lo que pasa al arrastrar hacia una esquina del mapa. Las coordenadas se clampean a `[0,1]` antes de convertirlas a mundo.
+- **Bug encontrado de paso**: el minimapa y los botones de tecnología/mute sobresalen por encima de la franja inferior del HUD, y la selección solo se protegía comparando contra `alturaZonaHudPx`. Es decir que un arrastre iniciado sobre la parte superior del minimapa abría además un rectángulo de selección en el mundo, por debajo del HUD. `ContextoSeleccion` pasó de recibir una altura a recibir un predicado `puntoSobreUi(x, y)` que el HUD responde consultando los bounds reales de sus widgets. Este bug era anterior al arrastre, pero el arrastre lo volvía mucho más fácil de disparar.
+
+## Bono de vida por tecnología, ahora retroactivo
+
+La vuelta anterior había dejado esta mejora aplicándose solo a las naves construidas *después* de la compra, con una justificación explícita: aplicarla a la flota viva era ambiguo respecto de la barra de vida (¿las naves heridas se curan de golpe?). La ambigüedad se resolvió eligiendo **escalar la fracción, no sumar la diferencia en crudo**: `Nave.reaplicarBonoVida()` recalcula el máximo de vida y escudo y reposiciona el valor actual en la misma proporción, así que una nave al 30% sigue al 30% de un máximo más alto. Nadie se cura por comprar tecnología, pero toda la flota gana el aguante que el jugador pagó, que era la expectativa razonable del jugador y la razón por la que estaba anotado como tarea. Se aplica solo al comprar la rama `defensa`; el daño ya se leía en vivo al disparar y no necesitaba nada.
+
+Efecto secundario de balance anotado en `TAREAS.md`: comprar Casco/Escudos con una flota grande ya desplegada es ahora bastante más potente que antes. Si en partidas reales se siente excesivo, la palanca es `BONO_VIDA_POR_NIVEL`, no el mecanismo.
+
+## Pooling de torpedos
+
+Era el último efecto sin poolear del juego. Se había dejado afuera en el prompt 2 con el argumento de que el volumen estaba acotado por la cadencia lenta del bombardero, que sigue siendo cierto — se hizo igual para cerrar la categoría entera y porque el patrón ya estaba establecido. `Torpedo.ts` recicla instancias en un pool **por escena y por bando**: separar por bando evita redibujar el `Graphics` del casco en cada lanzamiento, ya que el color depende de la facción. Mismo idioma que `render/efectos.ts`: cache en `WeakMap` invalidada en el `shutdown` de la escena. Al devolverse al pool, el torpedo **suelta la referencia a su objetivo** (`objetivo = null`), porque si no un torpedo dormido mantendría viva en memoria a una nave ya destruida.
+
+## Code-splitting
+
+El proyecto no tenía `vite.config.ts`. Se agregó uno que aísla Phaser en su propio chunk: el resultado pasa de un bundle único de 1.29MB (344KB gzip) a **26KB gzip de código del juego** más 319KB gzip de motor. El motor no cambia entre builds, así que queda cacheado en el navegador y un cambio de balance ya no obliga a reenviar todo. Dos detalles del entorno:
+
+- Vite 8 usa **rolldown**, que solo acepta `manualChunks` como función; la forma clásica de mapa `{ nombre: [módulos] }` de Rollup falla con `manualChunks is not a function`.
+- El warning de tamaño de chunk se sigue disparando por el chunk de Phaser, que no se puede partir más de forma sensata. Se subió `chunkSizeWarningLimit` a 1400KB para que el warning vuelva a ser señal útil si crece el código del juego, en vez de ruido permanente.
+
+## Qué se dejó explícitamente afuera
+
+- **Pathfinding**: no hay obstáculos sólidos en el mapa, así que hoy no habría nada que esquivar. Implementarlo sería código sin efecto observable.
+- **Guardado/reanudación de partida**: es la última tarea de peso pendiente. Implica serializar naves, minas, bases, créditos, tecnología, chatarra, torpedos y el estado interno de la IA; se dejó para una vuelta propia en vez de meterla a medias.
+- **Volatilidad del tier cazaPesado**: es una propiedad del modelo de combate en grupos chicos, ya documentada arriba con su análisis. No es un bug a arreglar sino un cuidado a tener en futuros ajustes.
+
+## Testing
+
+`npx tsc --noEmit` y `npm run build` limpios. En esta vuelta el servidor de desarrollo **sí se levantó** y se verificó que sirve el juego y todos los módulos con HTTP 200, pero el agente no puede operar un navegador, así que la partida jugada de punta a punta sigue siendo la única forma de verificación que falta y sigue anotada como prioridad alta en `TAREAS.md`.
